@@ -29,7 +29,7 @@ sudo apt install aircrack-ng  # if not already installed
 ## Run
 
 ```bash
-sudo python3 app.py
+sudo python3 wifisecaudit.py
 ```
 
 Open http://localhost:8080
