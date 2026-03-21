@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WiFi Security Audit</title>
+    <style>
+        :root {
+            --bg-primary: #0a0e17;
+            --bg-secondary: #111827;
+            --bg-card: #1a2332;
+            --bg-card-hover: #1f2b3d;
+            --border: #2a3a50;
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --accent-blue: #3b82f6;
+            --accent-cyan: #06b6d4;
+            --accent-green: #22c55e;
+            --accent-yellow: #eab308;
+            --accent-orange: #f97316;
+            --accent-red: #ef4444;
+            --accent-purple: #a855f7;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'SF Mono','Fira Code','Cascadia Code','Consolas',monospace; background: var(--bg-primary); color: var(--text-primary); min-height: 100vh; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg-secondary); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        .header { background: linear-gradient(135deg, var(--bg-secondary) 0%, #0f172a 100%); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
+        .logo { font-size: 20px; font-weight: 700; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .main { padding: 20px 24px; }
+        .grid { display: grid; gap: 16px; }
+        .grid-2 { grid-template-columns: repeat(2, 1fr); }
+        @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
+        .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+        .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+        .card-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+        .table-wrap { overflow-x: auto; max-height: 500px; overflow-y: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { text-align: left; padding: 8px 12px; font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); background: var(--bg-secondary); position: sticky; top: 0; z-index: 1; }
+        td { padding: 8px 12px; border-bottom: 1px solid rgba(42,58,80,0.5); }
+        tr:hover td { background: var(--bg-card-hover); }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+        .badge-green { background: rgba(34,197,94,0.15); color: var(--accent-green); }
+        .badge-red { background: rgba(239,68,68,0.15); color: var(--accent-red); }
+        .badge-yellow { background: rgba(234,179,8,0.15); color: var(--accent-yellow); }
+        .badge-purple { background: rgba(168,85,247,0.15); color: var(--accent-purple); }
+        .btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-primary); font-size: 12px; cursor: pointer; transition: all 0.2s; font-family: inherit; }
+        .btn:hover { border-color: var(--accent-blue); background: var(--bg-card-hover); }
+        .btn-primary { background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-danger { background: rgba(239,68,68,0.15); border-color: var(--accent-red); color: var(--accent-red); }
+        .btn-sm { padding: 3px 8px; font-size: 11px; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .event-log { max-height: 300px; overflow-y: auto; font-size: 12px; }
+        .event-entry { padding: 4px 8px; border-left: 3px solid var(--border); margin-bottom: 2px; display: flex; gap: 8px; }
+        .event-entry.info { border-left-color: var(--accent-blue); }
+        .event-entry.warning { border-left-color: var(--accent-yellow); }
+        .event-entry.error { border-left-color: var(--accent-red); }
+        .event-time { color: var(--text-muted); min-width: 70px; }
+        .event-source { color: var(--accent-cyan); min-width: 80px; font-weight: 600; }
+        .event-msg { color: var(--text-secondary); }
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 200; justify-content: center; align-items: center; }
+        .modal-overlay.active { display: flex; }
+        .modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; max-width: 700px; width: 90%; max-height: 80vh; overflow-y: auto; }
+        .modal-title { font-size: 16px; font-weight: 700; margin-bottom: 16px; color: var(--accent-cyan); }
+        .modal-close { float: right; background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 18px; }
+        .modal-close:hover { color: var(--accent-red); }
+        .mb-16 { margin-bottom: 16px; }
+        .mb-8 { margin-bottom: 8px; }
+        .mt-8 { margin-top: 8px; }
+        .flex { display: flex; }
+        .flex-between { display: flex; justify-content: space-between; align-items: center; }
+        .gap-8 { gap: 8px; }
+        .gap-16 { gap: 16px; }
+        select { background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary); padding: 4px 8px; border-radius: 4px; font-family: inherit; font-size: 12px; }
+        input[type="text"] { background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary); padding: 6px 10px; border-radius: 4px; font-family: inherit; font-size: 13px; width: 200px; }
+        input[type="text"]:focus { border-color: var(--accent-blue); outline: none; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <span class="logo">WIFI SECURITY AUDIT</span>
+    <div class="flex gap-8" style="align-items:center">
+        <select id="wifiInterface"></select>
+        <button class="btn btn-sm" onclick="loadWifiInterfaces()">Refresh</button>
+    </div>
+</div>
+
+<div class="main">
+    <!-- Status bar -->
+    <div class="card mb-16">
+        <div class="flex-between" style="flex-wrap:wrap">
+            <div class="flex gap-16" style="align-items:center;flex-wrap:wrap">
+                <div><span class="card-title">Status</span><div id="wifiStatusText" style="font-size:14px;margin-top:4px">Idle</div></div>
+                <div><span class="card-title">Packets</span><div id="wifiPacketCount" style="font-size:14px;margin-top:4px;color:var(--accent-cyan)">0</div></div>
+                <div><span class="card-title">EAPOL</span><div id="wifiEapolCount" style="font-size:14px;margin-top:4px;color:var(--accent-blue)">0</div></div>
+                <div><span class="card-title">PMKIDs</span><div id="wifiPmkidCount" style="font-size:14px;margin-top:4px;color:var(--accent-green)">0</div></div>
+                <div><span class="card-title">Handshakes</span><div id="wifiHandshakeCount" style="font-size:14px;margin-top:4px;color:var(--accent-purple)">0</div></div>
+            </div>
+            <div class="flex gap-8">
+                <span class="badge" id="wifiMonitorBadge" style="display:none">Monitor Mode</span>
+                <button class="btn btn-sm" onclick="wifiEnableMonitor()" id="btnMonitorOn">Enable Monitor</button>
+                <button class="btn btn-sm" onclick="wifiDisableMonitor()" id="btnMonitorOff" style="display:none">Disable Monitor</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="grid grid-2 mb-16">
+        <!-- Networks -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Networks</span>
+                <div class="flex gap-8">
+                    <button class="btn btn-primary btn-sm" onclick="wifiScan()" id="btnWifiScan">Scan</button>
+                    <button class="btn btn-danger btn-sm" onclick="wifiStopScan()" id="btnWifiScanStop" style="display:none">Stop</button>
+                </div>
+            </div>
+            <div class="flex gap-8 mb-8" style="align-items:center">
+                <button class="btn btn-sm btn-danger" id="btnDeauthSelected" onclick="startDeauthSelected()" disabled>Deauth Selected</button>
+                <span style="font-size:11px;color:var(--text-muted)">Select targets to deauth</span>
+            </div>
+            <div class="table-wrap" style="max-height:350px">
+                <table id="wifiNetworksTable">
+                    <thead><tr>
+                        <th style="width:30px"><input type="checkbox" onchange="selectAllDeauth(this)"></th>
+                        <th>SSID</th><th>BSSID</th><th>CH</th><th>Signal</th><th>Security</th><th>Actions</th>
+                    </tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Clients -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Clients</span>
+                <div class="flex gap-8">
+                    <button class="btn btn-primary btn-sm" onclick="startClientScan()" id="btnClientScan">Scan Clients</button>
+                    <button class="btn btn-danger btn-sm" onclick="stopClientScan()" id="btnClientScanStop" style="display:none">Stop</button>
+                </div>
+            </div>
+            <div id="clientScanStatus" style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Select APs above, then scan for clients</div>
+            <div class="table-wrap" style="max-height:350px">
+                <table id="clientsTable" style="display:none">
+                    <thead><tr>
+                        <th style="width:30px"><input type="checkbox" onchange="selectAllClients(this)"></th>
+                        <th>Client MAC</th><th>Vendor</th><th>AP (BSSID)</th><th>AP (SSID)</th><th>Signal</th><th>Pkts</th>
+                    </tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <div class="flex gap-8 mt-8" id="clientDeauthBar" style="display:none">
+                <button class="btn btn-sm btn-danger" id="btnDeauthClients" onclick="startDeauthClients()" disabled>Deauth Selected Clients</button>
+                <span style="font-size:11px;color:var(--text-muted);align-self:center">Target specific clients only</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Deauth Panel -->
+    <div class="card mb-16" id="deauthPanel" style="display:none;border-color:var(--accent-red)">
+        <div class="card-header" style="background:rgba(239,68,68,0.1)">
+            <span class="card-title" style="color:var(--accent-red)">Deauthentication Active</span>
+            <button class="btn btn-danger btn-sm" onclick="stopDeauth()">Stop Attack</button>
+        </div>
+        <div class="flex gap-16" style="align-items:center;padding:8px 0;flex-wrap:wrap">
+            <div><strong>Target:</strong> <span id="deauthTarget">-</span></div>
+            <div><strong>Frames:</strong> <span id="deauthFrames">0</span></div>
+            <div><strong>Clients:</strong> <span id="deauthClients">0</span></div>
+        </div>
+    </div>
+
+    <div class="grid grid-2 mb-16">
+        <!-- Capture -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">PMKID / Handshake Capture</span>
+            </div>
+            <div class="flex gap-8 mb-8" style="flex-wrap:wrap;align-items:center">
+                <input type="text" id="wifiTargetBSSID" placeholder="Target BSSID (optional)" style="width:180px">
+                <select id="wifiCaptureDuration">
+                    <option value="30">30s</option>
+                    <option value="60" selected>60s</option>
+                    <option value="120">2m</option>
+                    <option value="300">5m</option>
+                </select>
+                <button class="btn btn-primary btn-sm" onclick="wifiStartCapture()" id="btnWifiCapture">Capture</button>
+                <button class="btn btn-danger btn-sm" onclick="wifiStopCapture()" id="btnWifiStop" style="display:none">Stop</button>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted)">Enable monitor mode, scan networks, then capture. Select a BSSID or leave blank for all WPA2 APs.</div>
+        </div>
+        <!-- Export -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Captured PMKIDs</span>
+                <button class="btn btn-sm" onclick="wifiExport()">Export Hashcat</button>
+            </div>
+            <div id="wifiPmkidList" style="max-height:300px;overflow-y:auto">
+                <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:12px">No PMKIDs captured yet.</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="grid grid-2 mb-16">
+        <div class="card">
+            <div class="card-header"><span class="card-title">Captured Handshakes</span></div>
+            <div id="wifiHandshakeList" style="max-height:300px;overflow-y:auto">
+                <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:12px">No handshakes captured yet.</div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Log</span>
+                <button class="btn btn-sm" onclick="loadWifiLog()">Refresh</button>
+            </div>
+            <div class="event-log" id="wifiLog" style="max-height:250px"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+        <button class="modal-close" onclick="closeModal()">&times;</button>
+        <div class="modal-title" id="modalTitle"></div>
+        <div id="modalBody"></div>
+    </div>
+</div>
+
+<script>
+// ─── Helpers ──────────────────────────────────────────────────────────────
+async function api(url, opts = {}) {
+    try {
+        const r = await fetch(url, opts);
+        return await r.json();
+    } catch(e) { return null; }
+}
+function numberFmt(n) { return n != null ? n.toLocaleString() : '0'; }
+function escapeHtml(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function openModal(title, body) { document.getElementById('modalTitle').textContent = title; document.getElementById('modalBody').innerHTML = body; document.getElementById('modalOverlay').classList.add('active'); }
+function closeModal() { document.getElementById('modalOverlay').classList.remove('active'); }
+
+function renderEvents(id, events) {
+    const el = document.getElementById(id);
+    if (!events || events.length === 0) { el.innerHTML = '<div style="padding:12px;color:var(--text-muted)">No events yet.</div>'; return; }
+    el.innerHTML = events.map(e => {
+        const t = new Date(e.timestamp);
+        const time = t.toLocaleTimeString();
+        return `<div class="event-entry ${e.level}"><span class="event-time">${time}</span><span class="event-source">${escapeHtml(e.source)}</span><span class="event-msg">${escapeHtml(e.message)}</span></div>`;
+    }).join('');
+}
+
+// ─── WiFi Status ──────────────────────────────────────────────────────────
+let wifiRefreshTimer = null;
+
+async function loadWifiInterfaces() {
+    const ifaces = await api('/api/pmkid/interfaces');
+    const sel = document.getElementById('wifiInterface');
+    if (!ifaces || ifaces.length === 0) { sel.innerHTML = '<option value="">No WiFi interfaces</option>'; return; }
+    sel.innerHTML = ifaces.map(i => `<option value="${escapeHtml(i.name)}">${escapeHtml(i.name)} (${escapeHtml(i.description)})</option>`).join('');
+}
+
+async function loadWifiStatus() {
+    const s = await api('/api/pmkid/status');
+    if (s) loadWifiStatusFromData(s);
+}
+
+function loadWifiStatusFromData(s) {
+    document.getElementById('wifiPacketCount').textContent = numberFmt(s.packets);
+    document.getElementById('wifiEapolCount').textContent = numberFmt(s.eapol_frames);
+    document.getElementById('wifiPmkidCount').textContent = numberFmt(s.pmkids_captured);
+    document.getElementById('wifiHandshakeCount').textContent = numberFmt(s.handshakes_captured);
+    const st = document.getElementById('wifiStatusText');
+    const btnC = document.getElementById('btnWifiCapture');
+    const btnS = document.getElementById('btnWifiStop');
+    if (s.running) { st.innerHTML = '<span style="color:var(--accent-yellow)">Capturing...</span>'; btnC.style.display = 'none'; btnS.style.display = ''; }
+    else { st.innerHTML = '<span style="color:var(--text-muted)">Idle</span>'; btnC.style.display = ''; btnS.style.display = 'none'; }
+    const mon = document.getElementById('wifiMonitorBadge');
+    if (s.monitor_mode) { mon.style.display = ''; mon.className = 'badge badge-green'; document.getElementById('btnMonitorOn').style.display = 'none'; document.getElementById('btnMonitorOff').style.display = ''; }
+    else { mon.style.display = 'none'; document.getElementById('btnMonitorOn').style.display = ''; document.getElementById('btnMonitorOff').style.display = 'none'; }
+}
+
+// ─── Scan Networks ────────────────────────────────────────────────────────
+let wifiScanPollInterval = null;
+
+async function wifiScan() {
+    const iface = document.getElementById('wifiInterface').value;
+    document.getElementById('btnWifiScan').disabled = true;
+    document.getElementById('btnWifiScan').textContent = 'Scanning...';
+    document.getElementById('btnWifiScanStop').style.display = '';
+    await api('/api/pmkid/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({interface: iface, duration: 120}) });
+    wifiScanPollInterval = setInterval(async () => {
+        const st = await api('/api/pmkid/status');
+        await loadWifiNetworks();
+        if (!st || !st.scanning) wifiScanFinished();
+    }, 3000);
+}
+
+function wifiScanFinished() {
+    if (wifiScanPollInterval) { clearInterval(wifiScanPollInterval); wifiScanPollInterval = null; }
+    document.getElementById('btnWifiScan').disabled = false;
+    document.getElementById('btnWifiScan').textContent = 'Scan';
+    document.getElementById('btnWifiScanStop').style.display = 'none';
+}
+
+async function wifiStopScan() { await api('/api/pmkid/scan/stop', {method:'POST'}); wifiScanFinished(); await loadWifiNetworks(); }
+
+async function loadWifiNetworks() {
+    const networks = await api('/api/pmkid/networks');
+    const tbody = document.querySelector('#wifiNetworksTable tbody');
+    if (!networks || networks.length === 0) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">No networks found</td></tr>'; return; }
+    tbody.innerHTML = networks.map(n => {
+        const sig = n.signal ? `${n.signal} dBm` : '-';
+        const enc = n.encryption.includes('WPA') ? `<span class="badge badge-green">${escapeHtml(n.encryption)}</span>` : n.encryption === 'Open' ? '<span class="badge badge-red">Open</span>' : `<span class="badge badge-yellow">${escapeHtml(n.encryption)}</span>`;
+        return `<tr>
+            <td><input type="checkbox" class="deauth-select" data-bssid="${escapeHtml(n.bssid)}" data-channel="${n.channel||0}" onchange="updateDeauthSelectedCount()"></td>
+            <td>${escapeHtml(n.ssid)}</td>
+            <td style="font-size:11px;color:var(--text-muted)">${escapeHtml(n.bssid)}</td>
+            <td>${n.channel||'-'}</td><td>${sig}</td><td>${enc}</td>
+            <td>
+                <button class="btn btn-sm" onclick="wifiSelectTarget('${escapeHtml(n.bssid)}')" style="margin-right:4px">Select</button>
+                <button class="btn btn-sm btn-danger" onclick="startDeauth('${escapeHtml(n.bssid)}',${n.channel||0})">Deauth</button>
+            </td></tr>`;
+    }).join('');
+}
+
+function updateDeauthSelectedCount() {
+    const c = document.querySelectorAll('.deauth-select:checked');
+    const b = document.getElementById('btnDeauthSelected');
+    b.textContent = c.length > 0 ? `Deauth Selected (${c.length})` : 'Deauth Selected';
+    b.disabled = c.length === 0;
+}
+function selectAllDeauth(el) { document.querySelectorAll('.deauth-select').forEach(cb => cb.checked = el.checked); updateDeauthSelectedCount(); }
+
+// ─── Deauth (AP broadcast) ───────────────────────────────────────────────
+let deauthPollInterval = null;
+
+async function startDeauthSelected() {
+    const checked = document.querySelectorAll('.deauth-select:checked');
+    if (checked.length === 0) return;
+    const targets = Array.from(checked).map(cb => ({bssid: cb.dataset.bssid, channel: parseInt(cb.dataset.channel)||0}));
+    const names = targets.map(t => t.bssid).join(', ');
+    if (!confirm(`Deauth ${targets.length} network(s)?\n\n${names}\n\nOnly use on networks you own or have authorization to test.`)) return;
+    const iface = document.getElementById('wifiInterface').value;
+    const r = await api('/api/deauth/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({targets, interface: iface})});
+    if (r && r.success) { showDeauthPanel(`${targets.length} AP(s): ${names}`); } else { openModal('Error', `<p style="color:var(--accent-red)">${escapeHtml(r?.error||'Failed')}</p>`); }
+}
+
+async function startDeauth(bssid, channel) {
+    if (!confirm(`Deauth ${bssid}?\n\nOnly use on networks you own or have authorization to test.`)) return;
+    const iface = document.getElementById('wifiInterface').value;
+    const r = await api('/api/deauth/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({bssid, channel, interface: iface})});
+    if (r && r.success) { showDeauthPanel(bssid); } else { openModal('Error', `<p style="color:var(--accent-red)">${escapeHtml(r?.error||'Failed')}</p>`); }
+}
+
+function showDeauthPanel(target) {
+    document.getElementById('deauthPanel').style.display = '';
+    document.getElementById('deauthTarget').textContent = target;
+    document.getElementById('deauthFrames').textContent = '0';
+    document.getElementById('deauthClients').textContent = '0';
+    deauthPollInterval = setInterval(async () => {
+        const s = await api('/api/deauth/status');
+        if (s) {
+            document.getElementById('deauthFrames').textContent = s.frames_sent;
+            document.getElementById('deauthClients').textContent = (s.clients||[]).length;
+            if (!s.running) { clearInterval(deauthPollInterval); deauthPollInterval = null; document.getElementById('deauthPanel').style.display = 'none'; await loadWifiLog(); }
+        }
+    }, 3000);
+}
+
+async function stopDeauth() {
+    await api('/api/deauth/stop', {method:'POST'});
+    if (deauthPollInterval) { clearInterval(deauthPollInterval); deauthPollInterval = null; }
+    document.getElementById('deauthPanel').style.display = 'none';
+    await loadWifiLog();
+}
+
+// ─── Client Scanning ──────────────────────────────────────────────────────
+let clientScanPollInterval = null;
+
+async function startClientScan() {
+    const checked = document.querySelectorAll('.deauth-select:checked');
+    if (checked.length === 0) { openModal('No APs Selected', '<p>Select APs in the networks table first.</p>'); return; }
+    const targets = Array.from(checked).map(cb => ({bssid: cb.dataset.bssid, channel: parseInt(cb.dataset.channel)||0, ssid: cb.closest('tr').querySelector('td:nth-child(2)').textContent||''}));
+    const iface = document.getElementById('wifiInterface').value;
+    const r = await api('/api/clients/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({targets, duration: 0, interface: iface})});
+    if (r && r.success) {
+        document.getElementById('btnClientScan').style.display = 'none';
+        document.getElementById('btnClientScanStop').style.display = '';
+        document.getElementById('clientScanStatus').innerHTML = '<span style="color:var(--accent-yellow)">Scanning for clients...</span>';
+        clientScanPollInterval = setInterval(async () => {
+            const s = await api('/api/clients');
+            if (s) { renderClients(s.clients||[]); document.getElementById('clientScanStatus').innerHTML = s.scanning ? `<span style="color:var(--accent-yellow)">Scanning... ${s.count} client(s)</span>` : `<span style="color:var(--accent-green)">${s.count} client(s) found</span>`; if (!s.scanning) clientScanFinished(); }
+        }, 3000);
+    } else { openModal('Error', `<p style="color:var(--accent-red)">${escapeHtml(r?.error||'Failed')}</p>`); }
+}
+
+function clientScanFinished() { if (clientScanPollInterval) { clearInterval(clientScanPollInterval); clientScanPollInterval = null; } document.getElementById('btnClientScan').style.display = ''; document.getElementById('btnClientScanStop').style.display = 'none'; }
+
+async function stopClientScan() { await api('/api/clients/scan/stop', {method:'POST'}); clientScanFinished(); const s = await api('/api/clients'); if (s) { renderClients(s.clients||[]); document.getElementById('clientScanStatus').innerHTML = `<span style="color:var(--accent-green)">${s.count} client(s) found</span>`; } }
+
+function renderClients(clients) {
+    const table = document.getElementById('clientsTable');
+    const tbody = table.querySelector('tbody');
+    const bar = document.getElementById('clientDeauthBar');
+    if (!clients || clients.length === 0) { table.style.display = 'none'; bar.style.display = 'none'; return; }
+    table.style.display = ''; bar.style.display = '';
+    const byAp = {};
+    clients.forEach(c => { const k = c.bssid||'(none)'; if (!byAp[k]) byAp[k]=[]; byAp[k].push(c); });
+    let html = '';
+    for (const [,apClients] of Object.entries(byAp)) {
+        apClients.sort((a,b) => (b.packets||0)-(a.packets||0));
+        for (const c of apClients) {
+            const sig = c.signal && c.signal !== 0 ? `${c.signal} dBm` : '-';
+            const badge = c.associated ? '<span class="badge badge-green" style="font-size:10px">connected</span>' : '<span class="badge badge-yellow" style="font-size:10px">probing</span>';
+            const vendor = c.vendor ? escapeHtml(c.vendor) : '<span style="color:var(--text-muted)">unknown</span>';
+            html += `<tr>
+                <td><input type="checkbox" class="client-select" data-mac="${escapeHtml(c.mac)}" data-bssid="${escapeHtml(c.bssid)}" data-channel="${c.channel||0}" onchange="updateClientSelectedCount()" ${c.associated?'':'disabled'}></td>
+                <td style="font-size:11px;font-family:monospace">${escapeHtml(c.mac)}</td>
+                <td style="font-size:11px">${vendor}</td>
+                <td style="font-size:11px;color:var(--text-muted)">${escapeHtml(c.bssid)} ${badge}</td>
+                <td>${escapeHtml(c.ssid||'-')}</td><td>${sig}</td><td>${c.packets||0}</td></tr>`;
+        }
+    }
+    tbody.innerHTML = html;
+    updateClientSelectedCount();
+}
+
+function selectAllClients(el) { document.querySelectorAll('.client-select:not(:disabled)').forEach(cb => cb.checked = el.checked); updateClientSelectedCount(); }
+function updateClientSelectedCount() { const c = document.querySelectorAll('.client-select:checked'); const b = document.getElementById('btnDeauthClients'); b.textContent = c.length > 0 ? `Deauth Selected Clients (${c.length})` : 'Deauth Selected Clients'; b.disabled = c.length === 0; }
+
+async function startDeauthClients() {
+    const checked = document.querySelectorAll('.client-select:checked');
+    if (checked.length === 0) return;
+    const targets = Array.from(checked).map(cb => ({mac: cb.dataset.mac, bssid: cb.dataset.bssid, channel: parseInt(cb.dataset.channel)||0}));
+    const desc = targets.map(c => `${c.mac} on ${c.bssid}`).join('\n');
+    if (!confirm(`Deauth ${targets.length} client(s) only:\n\n${desc}\n\nOther clients on the same AP will NOT be affected.`)) return;
+    const iface = document.getElementById('wifiInterface').value;
+    const r = await api('/api/deauth/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({clients: targets, interface: iface})});
+    if (r && r.success) { showDeauthPanel(`${targets.length} client(s): ${targets.map(c=>c.mac).join(', ')}`); } else { openModal('Error', `<p style="color:var(--accent-red)">${escapeHtml(r?.error||'Failed')}</p>`); }
+}
+
+// ─── Capture ──────────────────────────────────────────────────────────────
+function wifiSelectTarget(bssid) { document.getElementById('wifiTargetBSSID').value = bssid; }
+
+async function wifiStartCapture() {
+    const iface = document.getElementById('wifiInterface').value;
+    const bssid = document.getElementById('wifiTargetBSSID').value.trim();
+    const dur = parseInt(document.getElementById('wifiCaptureDuration').value);
+    await api('/api/pmkid/capture', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({interface: iface, bssid: bssid||null, duration: dur})});
+    await loadWifiStatus();
+}
+
+async function wifiStopCapture() { await api('/api/pmkid/stop', {method:'POST'}); await loadWifiStatus(); }
+
+async function wifiEnableMonitor() {
+    const iface = document.getElementById('wifiInterface').value;
+    const r = await api('/api/pmkid/monitor', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({interface: iface, enable: true})});
+    if (r && !r.success) openModal('Monitor Mode', `<p style="color:var(--accent-red)">${escapeHtml(r.message||'Failed')}</p>`);
+    await loadWifiStatus();
+}
+
+async function wifiDisableMonitor() {
+    const iface = document.getElementById('wifiInterface').value;
+    await api('/api/pmkid/monitor', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({interface: iface, enable: false})});
+    await loadWifiStatus();
+}
+
+async function loadWifiResults() {
+    const r = await api('/api/pmkid/results');
+    if (!r) return;
+    const pmkidList = document.getElementById('wifiPmkidList');
+    if (r.pmkids && r.pmkids.length > 0) {
+        pmkidList.innerHTML = r.pmkids.map(p => `<div style="background:var(--bg-secondary);border:1px solid var(--accent-green);border-radius:6px;padding:10px;margin-bottom:6px">
+            <div class="flex-between"><span class="badge badge-green">PMKID</span><span style="font-size:11px;color:var(--text-muted)">${new Date(p.timestamp).toLocaleTimeString()}</span></div>
+            <div style="font-size:12px;margin-top:6px"><div><strong>SSID:</strong> ${escapeHtml(p.ssid||'?')}</div><div><strong>BSSID:</strong> ${escapeHtml(p.bssid)}</div>
+            <div style="margin-top:4px"><strong>PMKID:</strong> <code style="color:var(--accent-green);font-size:11px;word-break:break-all">${escapeHtml(p.pmkid)}</code></div>
+            <div><strong>Hashcat:</strong> <code style="color:var(--accent-cyan);font-size:10px;word-break:break-all">${escapeHtml(p.hashcat_line)}</code></div></div></div>`).join('');
+    } else { pmkidList.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:12px">No PMKIDs captured yet.</div>'; }
+    const hsList = document.getElementById('wifiHandshakeList');
+    if (r.handshakes && r.handshakes.length > 0) {
+        hsList.innerHTML = r.handshakes.map(h => `<div style="background:var(--bg-secondary);border:1px solid var(--accent-purple);border-radius:6px;padding:10px;margin-bottom:6px">
+            <div class="flex-between"><span class="badge badge-purple">Handshake</span><span style="font-size:11px;color:var(--text-muted)">${new Date(h.timestamp).toLocaleTimeString()}</span></div>
+            <div style="font-size:12px;margin-top:6px"><div><strong>SSID:</strong> ${escapeHtml(h.ssid||'?')}</div><div><strong>BSSID:</strong> ${escapeHtml(h.bssid)}</div><div><strong>Messages:</strong> ${h.messages.join(', ')}</div></div></div>`).join('');
+    } else { hsList.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:12px">No handshakes captured yet.</div>'; }
+}
+
+async function wifiExport() {
+    const r = await api('/api/pmkid/export', {method:'POST'});
+    if (r && r.success) openModal('Export', `<p>Exported to: <code>${escapeHtml(r.file)}</code></p><p style="margin-top:8px;font-size:12px;color:var(--text-secondary)">hashcat -m 22000 ${escapeHtml(r.file)} wordlist.txt</p>`);
+    else openModal('Export', `<p style="color:var(--accent-red)">${escapeHtml(r?.error||'No PMKIDs')}</p>`);
+}
+
+async function loadWifiLog() {
+    const log = await api('/api/pmkid/log?n=50');
+    if (log) renderEvents('wifiLog', log.slice().reverse());
+}
+
+// ─── Init & Polling ───────────────────────────────────────────────────────
+async function init() {
+    await loadWifiInterfaces();
+    await loadWifiStatus();
+    await loadWifiResults();
+    await loadWifiLog();
+    setInterval(async () => {
+        const s = await api('/api/pmkid/status');
+        if (s) { loadWifiStatusFromData(s); if (s.running || s.scanning) { await loadWifiResults(); await loadWifiLog(); } }
+    }, 5000);
+}
+init();
+</script>
+</body>
+</html>
