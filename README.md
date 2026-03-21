@@ -53,7 +53,7 @@ Open http://localhost:8080
 ## Project Structure
 
 ```
-app.py                  — Flask web server, all API routes
+wifisecaudit.py                  — Flask web server, all API routes
 modules/
   pmkid_capture.py      — WiFi engine: scanning, capture, deauth, client discovery
 templates/
