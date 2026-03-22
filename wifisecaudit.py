@@ -151,6 +151,54 @@ def api_pmkid_log():
     return jsonify(pmkid.get_log(n))
 
 
+@app.route("/api/handshake/export", methods=["POST"])
+def api_handshake_export():
+    data = request.json or {}
+    indices = data.get("indices")  # None = all, or list of ints
+    fmt = data.get("format", "pcap")  # "pcap" or "hc22000"
+    files = pmkid.export_handshakes(indices, fmt=fmt)
+    if files:
+        return jsonify({"success": True, "files": files, "count": len(files)})
+    return jsonify({"error": "No handshakes to export"}), 404
+
+
+# ─── Routes: Passive Sniffer ────────────────────────────────────────────
+
+@app.route("/api/sniffer/start", methods=["POST"])
+def api_sniffer_start():
+    data = request.json or {}
+    interface = data.get("interface")
+    channel = data.get("channel")
+    bssid = data.get("bssid")
+
+    if not interface:
+        wifi = pmkid.get_wifi_interfaces()
+        if wifi:
+            interface = wifi[0]["name"]
+        else:
+            return jsonify({"error": "No WiFi interface found"}), 404
+
+    if pmkid.sniffer_active:
+        return jsonify({"error": "Sniffer already running"}), 409
+
+    success = pmkid.start_sniffer(interface, channel=channel, bssid=bssid)
+    return jsonify({"success": success})
+
+
+@app.route("/api/sniffer/stop", methods=["POST"])
+def api_sniffer_stop():
+    pmkid.stop_sniffer()
+    return jsonify({"success": True})
+
+
+@app.route("/api/sniffer/status")
+def api_sniffer_status():
+    return jsonify({
+        "active": pmkid.sniffer_active,
+        "interface": pmkid.sniffer_interface,
+    })
+
+
 # ─── Routes: Client Scanning ────────────────────────────────────────────────
 
 @app.route("/api/clients/scan", methods=["POST"])

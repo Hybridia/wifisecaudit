@@ -16,10 +16,13 @@ Complete technical documentation for developers and collaborators. Covers instal
 8. [API Reference](#8-api-reference)
 9. [Deauthentication — How It Works](#9-deauthentication--how-it-works)
 10. [PMKID Capture — How It Works](#10-pmkid-capture--how-it-works)
-11. [External Tool Dependencies](#11-external-tool-dependencies)
-12. [Design Decisions](#12-design-decisions)
-13. [Common Workflows](#13-common-workflows)
-14. [Troubleshooting](#14-troubleshooting)
+11. [Passive Sniffer & Handshake Capture](#11-passive-sniffer--handshake-capture)
+12. [Hidden SSID Reveal](#12-hidden-ssid-reveal)
+13. [Handshake Export & Cracking](#13-handshake-export--cracking)
+14. [External Tool Dependencies](#14-external-tool-dependencies)
+15. [Design Decisions](#12-design-decisions)
+16. [Common Workflows](#13-common-workflows)
+17. [Troubleshooting](#14-troubleshooting)
 
 ---
 
@@ -179,7 +182,9 @@ Routes are grouped by feature:
 | UI | `GET /` | Serve index.html |
 | Interfaces & Monitor | `GET /api/pmkid/interfaces`, `POST /api/pmkid/monitor` | List WiFi interfaces, toggle monitor mode |
 | Network Scanning | `POST /api/pmkid/scan`, `POST /api/pmkid/scan/stop`, `GET /api/pmkid/networks` | Discover nearby WiFi APs |
-| PMKID Capture | `POST /api/pmkid/capture`, `POST /api/pmkid/stop`, `GET /api/pmkid/status`, `GET /api/pmkid/results`, `POST /api/pmkid/export`, `GET /api/pmkid/log` | Capture and export PMKID/handshakes |
+| PMKID Capture | `POST /api/pmkid/capture`, `POST /api/pmkid/stop`, `GET /api/pmkid/status`, `GET /api/pmkid/results`, `POST /api/pmkid/export`, `GET /api/pmkid/log` | Capture and export PMKIDs |
+| Handshake Export | `POST /api/handshake/export` | Export handshakes as .cap or .hc22000 |
+| Passive Sniffer | `POST /api/sniffer/start`, `POST /api/sniffer/stop`, `GET /api/sniffer/status` | Background EAPOL handshake sniffer |
 | Client Scanning | `POST /api/clients/scan`, `POST /api/clients/scan/stop`, `GET /api/clients` | Discover clients on selected APs |
 | Deauthentication | `POST /api/deauth/start`, `POST /api/deauth/stop`, `GET /api/deauth/status` | Deauth APs or specific clients |
 
@@ -233,6 +238,9 @@ Main engine class. One instance handles everything.
 | `captured_handshakes` | list | Captured handshake dicts |
 | `client_scanning` | bool | Client scan in progress |
 | `discovered_clients` | list | Client dicts from airodump-ng |
+| `sniffer_active` | bool | Passive EAPOL sniffer running |
+| `sniffer_thread` | Thread | Background sniffer thread |
+| `sniffer_interface` | str | Interface the sniffer is using |
 | `deauth_running` | bool | Deauth attack in progress |
 | `deauth_count` | int | Total deauth frames sent |
 | `_deauth_processes` | list | Running aireplay-ng subprocess.Popen objects |
@@ -433,6 +441,7 @@ Single-page web application. No build tools, no frameworks — just vanilla HTML
 │  WIFI SECURITY AUDIT          [interface ▼] [⟳] │  ← Header
 ├─────────────────────────────────────────────────┤
 │  Status │ Packets │ EAPOL │ PMKIDs │ Handshakes │  ← Status bar
+│         │         │       │        │ Sniffer    │
 │         │         │       │        │  [Monitor] │
 ├────────────────────┬────────────────────────────┤
 │  Networks          │  Clients                   │  ← Scan results
@@ -443,8 +452,11 @@ Single-page web application. No build tools, no frameworks — just vanilla HTML
 │  PMKID Capture     │  Captured PMKIDs           │  ← Capture
 │  [BSSID] [60s ▼]   │  [Export Hashcat]          │
 │  [Capture] [Stop]  │                            │
+│  [Start Sniffer]   │                            │
 ├────────────────────┼────────────────────────────┤
 │  Handshakes        │  Log                       │  ← Results
+│  [.cap▼] [Export]  │                            │
+│  ☑ Handshake 1     │                            │
 └────────────────────┴────────────────────────────┘
 │  Deauth Active: Target | Frames | Clients [Stop]│  ← Deauth panel
 └─────────────────────────────────────────────────┘     (shown when active)
@@ -494,12 +506,22 @@ Single-page web application. No build tools, no frameworks — just vanilla HTML
 **Capture**
 - `wifiStartCapture()` / `wifiStopCapture()` — start/stop PMKID capture
 - `wifiEnableMonitor()` / `wifiDisableMonitor()` — toggle monitor mode
-- `loadWifiResults()` — renders captured PMKIDs and handshakes
-- `wifiExport()` — triggers hashcat export, shows file path in modal
+- `loadWifiResults()` — renders captured PMKIDs and handshakes (with checkboxes)
+- `wifiExport()` — triggers hashcat PMKID export, shows file path in modal
+
+**Passive Sniffer**
+- `startSniffer()` — starts background EAPOL sniffer on the monitor interface, optionally locked to a BSSID's channel
+- `stopSniffer()` — stops the sniffer
+
+**Handshake Export**
+- `exportSelectedHandshakes()` — exports checked handshakes in selected format
+- `exportAllHandshakes()` — exports all handshakes
+- Format dropdown: `.cap` (aircrack-ng) or `.hc22000` (hashcat)
+- `updateHsSelectedCount()` — updates "Export Selected (N)" button state
 
 **Polling**
 - Status checked every 5s (lightweight, 1 request)
-- Results + log only fetched when `status.running` or `status.scanning` is true
+- Results + log fetched when `status.running`, `status.scanning`, or `status.sniffer_active` is true
 - Deauth status polled every 3s while active
 - Network list polled every 3s during scan
 
@@ -607,14 +629,14 @@ Stop capture.
 
 #### GET /api/pmkid/status
 ```json
-{"running": false, "scanning": false, "monitor_mode": true, "packets": 1234, "eapol_frames": 5, "pmkids_captured": 1, "handshakes_captured": 0, "networks_seen": 8}
+{"running": false, "scanning": false, "monitor_mode": true, "sniffer_active": false, "packets": 1234, "eapol_frames": 5, "pmkids_captured": 1, "handshakes_captured": 0, "networks_seen": 8}
 ```
 
 #### GET /api/pmkid/results
 ```json
 {
   "pmkids": [{"timestamp": "...", "ssid": "MyNetwork", "bssid": "...", "mac_ap": "...", "mac_client": "...", "pmkid": "abcdef...", "hashcat_line": "WPA*01*..."}],
-  "handshakes": [{"timestamp": "...", "ssid": "MyNetwork", "bssid": "...", "messages": [1, 2]}]
+  "handshakes": [{"timestamp": "...", "ssid": "MyNetwork", "bssid": "...", "mac_ap": "...", "mac_client": "...", "messages": [1, 2], "hashcat_line": "WPA*02*..."}]
 }
 ```
 
@@ -623,6 +645,36 @@ Export PMKIDs in hashcat mode 22000 format. Returns `{"success": true, "file": "
 
 #### GET /api/pmkid/log?n=50
 Returns last N log entries from the WiFi engine.
+
+### Passive Sniffer
+
+#### POST /api/sniffer/start
+Start passive EAPOL sniffer. Captures handshakes from client reconnections.
+```json
+{"interface": "wlan0mon", "bssid": "aa:bb:cc:dd:ee:ff"}
+```
+BSSID is optional — if provided, locks the interface to that AP's channel. Without BSSID, listens on current channel. Multiple APs on the same channel are captured simultaneously.
+
+#### POST /api/sniffer/stop
+Stop the passive sniffer.
+
+#### GET /api/sniffer/status
+```json
+{"active": true, "interface": "wlan0mon"}
+```
+
+### Handshake Export
+
+#### POST /api/handshake/export
+Export captured handshakes as individual files.
+```json
+// Export all as .cap (aircrack-ng compatible)
+{"format": "pcap"}
+
+// Export specific handshakes as .hc22000 (hashcat)
+{"indices": [0, 2], "format": "hc22000"}
+```
+Returns `{"success": true, "files": ["data/handshake_MyNetwork_aabbccddeeff_20260322_1234_0.cap"], "count": 1}`.
 
 ---
 
@@ -710,7 +762,118 @@ hashcat -m 22000 data/pmkid_*.22000 /path/to/wordlist.txt
 
 ---
 
-## 11. External Tool Dependencies
+## 11. Passive Sniffer & Handshake Capture
+
+### What is a WPA2 Handshake?
+
+The WPA2 4-way handshake occurs when a client connects (or reconnects) to an AP:
+
+| Message | Direction | Contains |
+|---------|-----------|----------|
+| 1 | AP -> Client | ANonce (AP's random nonce) |
+| 2 | Client -> AP | SNonce (client's nonce) + MIC |
+| 3 | AP -> Client | GTK (group key) + MIC |
+| 4 | Client -> AP | ACK confirmation |
+
+**Messages 1 + 2 are the minimum needed for cracking.** They contain both nonces and the MIC, which is enough to test passwords offline.
+
+### How the Passive Sniffer Works
+
+The sniffer runs a Scapy `sniff()` in a background daemon thread with `_process_capture_packet` as the callback:
+
+1. **Start sniffer** — optionally locks to a target AP's channel via `set_channel()`
+2. **Scapy sniff loop** — captures all frames on the channel, passes each to `_process_capture_packet`
+3. **EAPOL detection** — `_process_eapol()` parses the EAPOL Key Information field (bytes 5-6) to identify message number:
+   - Bit 7 (ACK) + no Bit 8 (MIC) = Message 1
+   - No Bit 7 + Bit 8 = Message 2
+   - Bit 7 + Bit 8 = Message 3
+4. **Handshake match** — when both Message 1 and Message 2 are stored for the same BSSID, a handshake is recorded
+5. **Stop** — setting `sniffer_active = False` triggers Scapy's `stop_filter` on the next packet
+
+### Independence from Other Features
+
+The sniffer uses `self.sniffer_active` — completely independent from `self.running` (PMKID capture) and `self.deauth_running`. All three can run simultaneously:
+
+- Start sniffer (listens for EAPOL)
+- Start deauth (kicks clients off)
+- Clients reconnect, sniffer captures the handshake
+
+### Multi-AP Capture
+
+The sniffer captures ALL traffic on the channel it's listening on. If multiple APs share the same channel, all their handshakes are captured simultaneously. Only limitation: a single WiFi adapter can only listen on one channel at a time.
+
+---
+
+## 12. Hidden SSID Reveal
+
+### How Hidden SSIDs Work
+
+APs with "SSID broadcast" disabled send beacons with an empty or null SSID field. The tool stores these as `<Hidden>`. However, the SSID is transmitted in cleartext in:
+
+- **Probe responses** — when the AP responds to a client probe
+- **Probe requests** — when a client probes for the hidden network
+
+### How the Tool Reveals Hidden SSIDs
+
+Three paths in `_process_beacon()`:
+
+1. **Probe response parsing** — extracts SSID from `Dot11ProbeResp` elements (Dot11Elt ID=0). If the BSSID matches a `<Hidden>` entry, the SSID is updated.
+
+2. **Probe request matching** — extracts SSID from `Dot11ProbeReq`. If the sending client MAC is known to be associated with a hidden AP (in `net.clients`), the AP's SSID is updated.
+
+3. **SSID update on existing entries** — any time a real SSID is found for a BSSID that currently shows `<Hidden>`, it's replaced. A log message is generated: `"Hidden SSID revealed: <bssid> -> '<ssid>'"`.
+
+### Workflow
+
+1. Scan networks — hidden APs appear as `<Hidden>`
+2. Start sniffer on the hidden AP's channel
+3. Deauth the AP — clients reconnect and send probe requests revealing the SSID
+4. The `<Hidden>` entry updates to the real name in the networks table
+
+---
+
+## 13. Handshake Export & Cracking
+
+### Export Formats
+
+| Format | Extension | Tool | Command |
+|--------|-----------|------|---------|
+| pcap | `.cap` | aircrack-ng | `aircrack-ng -w wordlist.txt file.cap` |
+| hc22000 | `.hc22000` | hashcat | `hashcat -m 22000 file.hc22000 wordlist.txt` |
+
+### pcap Export (`.cap`)
+
+The `_build_pcap()` method constructs a minimal pcap file using Scapy's `wrpcap()`:
+
+1. **Beacon frame** — includes SSID and RSN IE so aircrack-ng identifies the network as WPA2
+2. **EAPOL Message 1** — AP -> Client, plain Data frame (type=2, subtype=0, FCfield=From-DS), LLC/SNAP/EAPOL
+3. **EAPOL Message 2** — Client -> AP, plain Data frame (type=2, subtype=0, FCfield=To-DS), LLC/SNAP/EAPOL
+
+Uses `subtype=0` (plain Data) instead of `subtype=8` (QoS Data) to avoid the 2-byte QoS Control header that would shift all subsequent bytes and corrupt the frame structure.
+
+### hc22000 Export (`.hc22000`)
+
+Format: `WPA*02*MIC*MAC_AP*MAC_CLIENT*ESSID_HEX*ANONCE*EAPOL_M2_ZEROED*00`
+
+- MIC: extracted from Message 2 (bytes 81-97 of raw EAPOL)
+- ANonce: extracted from Message 1 (bytes 17-49 of raw EAPOL)
+- EAPOL_M2_ZEROED: full Message 2 with MIC field replaced by zeros
+
+### Per-Handshake Files
+
+Each handshake is exported to its own file, named: `data/handshake_<SSID>_<BSSID>_<timestamp>_<index>.<ext>`
+
+This allows selecting specific handshakes to crack, rather than processing all of them.
+
+### Cracking Notes
+
+- **aircrack-ng** works on CPU, reliable in VMs — recommended for VM environments
+- **hashcat** requires GPU or working OpenCL runtime — may segfault in VirtualBox VMs due to PoCL issues
+- The password must be in your wordlist — try `rockyou.txt` or generate custom wordlists with `crunch`
+
+---
+
+## 14. External Tool Dependencies
 
 | Tool | Package | Used For | Required? |
 |------|---------|----------|-----------|
@@ -742,19 +905,38 @@ Earlier versions ran `airodump-ng` for 10 seconds per target before attacking. W
 ### Why targeted_only flag on disassoc loop?
 When deauthing a specific client, the disassoc loop must NOT send broadcast frames (`ff:ff:ff:ff:ff:ff`) because that kicks ALL clients on the AP. The `targeted_only` flag ensures only per-client disassoc frames are sent.
 
+### Why a separate sniffer instead of using start_capture for handshakes?
+`start_capture` does active PMKID injection — it iterates targets, injects auth/assoc frames, and listens per-target with a raw socket. This is fundamentally different from passive handshake capture, which needs a long-running background sniffer on the channel. Keeping them separate means both can run simultaneously without interference, and the user has explicit control over when passive sniffing is active.
+
+### Why pcap export uses plain Data frames (subtype=0)?
+QoS Data frames (subtype=8) require a 2-byte QoS Control field after the Dot11 header. Scapy's `Dot11(subtype=8)` doesn't automatically add this field, which shifts all LLC/SNAP/EAPOL bytes by 2 and corrupts the frame. Using plain Data frames avoids this issue and produces pcap files that aircrack-ng reads correctly.
+
+### Why export per-handshake files instead of one combined file?
+In practice, you may capture handshakes from multiple APs but only want to crack specific ones. Per-file export lets you target individual networks with different wordlists or skip already-cracked ones.
+
 ---
 
 ## 13. Common Workflows
 
-### Full Network Audit
+### Full Network Audit (Handshake Capture)
+
+1. Enable monitor mode
+2. Scan networks (stop when targets found)
+3. Select target AP, click "Select" to set BSSID
+4. Click **Start Sniffer** — locks to target AP's channel
+5. Click **Deauth** on the target AP — kicks clients off
+6. Clients reconnect — sniffer captures the 4-way handshake automatically
+7. Select `.cap` format, click **Export All** or check specific handshakes and **Export Selected**
+8. Crack with: `aircrack-ng -w wordlist.txt handshake.cap`
+
+### Full Network Audit (PMKID)
 
 1. Enable monitor mode
 2. Scan networks (stop when targets found)
 3. Select all target APs
-4. Scan clients
-5. Start PMKID capture on target BSSID
-6. While capturing, deauth the target AP to force client reconnections (triggers PMKID)
-7. Export PMKIDs for hashcat
+4. Start PMKID capture on target BSSID
+5. While capturing, deauth the target AP to force client reconnections (triggers PMKID)
+6. Export PMKIDs for hashcat
 
 ### Deauth Test (Single AP)
 
@@ -781,6 +963,15 @@ When deauthing a specific client, the disassoc loop must NOT send broadcast fram
 5. Check specific client(s)
 6. Click "Deauth Selected Clients"
 7. Only those clients are disconnected
+
+### Hidden SSID Discovery
+
+1. Enable monitor mode
+2. Scan networks — hidden APs show as `<Hidden>`
+3. Start sniffer on the hidden AP's channel (click Select on the hidden AP, then Start Sniffer)
+4. Deauth the hidden AP
+5. Clients reconnect, sending probe requests with the real SSID
+6. `<Hidden>` updates to the actual network name in the networks table
 
 ---
 
@@ -814,3 +1005,24 @@ When deauthing a specific client, the disassoc loop must NOT send broadcast fram
 - Make sure you selected APs before clicking "Scan Clients"
 - Run the scan longer — clients send frames infrequently when idle
 - The adapter must be on the correct channel (handled automatically)
+
+### Sniffer not capturing handshakes
+- Ensure monitor mode is active
+- Make sure the sniffer is on the same channel as the target AP (set target BSSID before starting sniffer)
+- Don't run a network scan while sniffing — scanning hops channels and moves away from the target
+- Verify clients are actually reconnecting after deauth (check log for EAPOL messages)
+- You need Messages 1 + 2 for a complete handshake
+
+### Handshake export shows "No handshakes to export"
+- Handshakes must be captured after the latest restart — old captures don't persist
+- Check the Captured Handshakes section shows entries with Messages 1, 2
+
+### aircrack-ng shows "WEP (0 IVs)" on exported .cap file
+- This indicates the EAPOL frames weren't recognized — recapture and re-export
+- Ensure you're using the latest version of the tool with the pcap fix
+
+### hashcat segfaults
+- Common in VirtualBox/VMware VMs — PoCL OpenCL runtime doesn't work in virtualized environments
+- Try: `export POCL_DEVICES=basic && hashcat -m 22000 file.hc22000 wordlist.txt -D 1 --force`
+- Alternative: use aircrack-ng with `.cap` export instead — it works on CPU without OpenCL
+- For full hashcat support, run on bare metal or with GPU passthrough

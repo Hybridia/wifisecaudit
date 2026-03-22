@@ -5,10 +5,13 @@ Standalone web-based WiFi penetration testing toolkit for authorized security as
 ## Features
 
 - **Network Scanning** — Discover nearby WiFi networks (2.4GHz + 5GHz), channel hopping, signal strength
+- **Hidden SSID Reveal** — Automatically uncovers hidden network names from probe requests/responses
 - **Client Discovery** — Find connected clients on selected APs using airodump-ng, with MAC vendor resolution
 - **Deauthentication** — Broadcast AP deauth (all clients) or targeted client deauth (specific clients only)
 - **PMKID Capture** — Capture PMKID from WPA2 handshakes for offline password testing
-- **Handshake Capture** — Capture 4-way WPA2 handshakes
+- **Passive Sniffer** — Background EAPOL sniffer that captures handshakes when clients reconnect after deauth
+- **Handshake Capture** — Capture 4-way WPA2 handshakes (Messages 1+2 minimum)
+- **Handshake Export** — Export captured handshakes as `.cap` (aircrack-ng) or `.hc22000` (hashcat) per-handshake files
 - **Hashcat Export** — Export captured PMKIDs in hashcat mode 22000 format
 
 ## Requirements
@@ -46,9 +49,17 @@ Open http://localhost:8080
 2. **Scan Networks** — discover nearby APs, stop when you see your targets
 3. **Select Targets** — check the APs you want to test
 4. **Scan Clients** — discover who's connected to the selected APs
-5. **Deauth** — broadcast deauth on APs or targeted deauth on specific clients
-6. **Capture PMKID** — select a target BSSID and start capture
-7. **Export** — export PMKIDs for hashcat cracking
+5. **Start Sniffer** — begin passive EAPOL capture (optionally set target BSSID to lock channel)
+6. **Deauth** — broadcast deauth on APs or targeted deauth on specific clients
+7. **Capture Handshake** — sniffer automatically captures the 4-way handshake when clients reconnect
+8. **Export** — select format (`.cap` for aircrack-ng or `.hc22000` for hashcat), export individual or all handshakes
+9. **Crack** — run `aircrack-ng -w wordlist.txt handshake.cap` to recover the password
+
+### PMKID Workflow (alternative)
+
+1. Enable monitor mode, scan networks
+2. Select a target BSSID and click **Capture** — injects auth/assoc frames to trigger PMKID
+3. **Export Hashcat** — export PMKIDs for `hashcat -m 22000`
 
 ## Project Structure
 
