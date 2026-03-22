@@ -99,6 +99,7 @@
                 <div><span class="card-title">EAPOL</span><div id="wifiEapolCount" style="font-size:14px;margin-top:4px;color:var(--accent-blue)">0</div></div>
                 <div><span class="card-title">PMKIDs</span><div id="wifiPmkidCount" style="font-size:14px;margin-top:4px;color:var(--accent-green)">0</div></div>
                 <div><span class="card-title">Handshakes</span><div id="wifiHandshakeCount" style="font-size:14px;margin-top:4px;color:var(--accent-purple)">0</div></div>
+                <div><span class="card-title">Sniffer</span><div id="wifiSnifferStatus" style="font-size:14px;margin-top:4px;color:var(--text-muted)">Off</div></div>
             </div>
             <div class="flex gap-8">
                 <span class="badge" id="wifiMonitorBadge" style="display:none">Monitor Mode</span>
@@ -188,6 +189,8 @@
                 </select>
                 <button class="btn btn-primary btn-sm" onclick="wifiStartCapture()" id="btnWifiCapture">Capture</button>
                 <button class="btn btn-danger btn-sm" onclick="wifiStopCapture()" id="btnWifiStop" style="display:none">Stop</button>
+                <button class="btn btn-primary btn-sm" onclick="startSniffer()" id="btnSnifferStart" style="margin-left:8px">Start Sniffer</button>
+                <button class="btn btn-danger btn-sm" onclick="stopSniffer()" id="btnSnifferStop" style="display:none;margin-left:8px">Stop Sniffer</button>
             </div>
             <div style="font-size:11px;color:var(--text-muted)">Enable monitor mode, scan networks, then capture. Select a BSSID or leave blank for all WPA2 APs.</div>
         </div>
@@ -205,7 +208,17 @@
 
     <div class="grid grid-2 mb-16">
         <div class="card">
-            <div class="card-header"><span class="card-title">Captured Handshakes</span></div>
+            <div class="card-header">
+                <span class="card-title">Captured Handshakes</span>
+                <div class="flex gap-8" style="align-items:center">
+                    <select id="hsExportFormat" style="font-size:11px">
+                        <option value="pcap">.cap (aircrack-ng)</option>
+                        <option value="hc22000">.hc22000 (hashcat)</option>
+                    </select>
+                    <button class="btn btn-sm" onclick="exportSelectedHandshakes()" id="btnExportHs" disabled>Export Selected</button>
+                    <button class="btn btn-sm" onclick="exportAllHandshakes()">Export All</button>
+                </div>
+            </div>
             <div id="wifiHandshakeList" style="max-height:300px;overflow-y:auto">
                 <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:12px">No handshakes captured yet.</div>
             </div>
@@ -280,6 +293,9 @@ function loadWifiStatusFromData(s) {
     const mon = document.getElementById('wifiMonitorBadge');
     if (s.monitor_mode) { mon.style.display = ''; mon.className = 'badge badge-green'; document.getElementById('btnMonitorOn').style.display = 'none'; document.getElementById('btnMonitorOff').style.display = ''; }
     else { mon.style.display = 'none'; document.getElementById('btnMonitorOn').style.display = ''; document.getElementById('btnMonitorOff').style.display = 'none'; }
+    const snifferStatus = document.getElementById('wifiSnifferStatus');
+    if (s.sniffer_active) { snifferStatus.innerHTML = '<span style="color:var(--accent-green)">Active</span>'; document.getElementById('btnSnifferStart').style.display = 'none'; document.getElementById('btnSnifferStop').style.display = ''; }
+    else { snifferStatus.innerHTML = '<span style="color:var(--text-muted)">Off</span>'; document.getElementById('btnSnifferStart').style.display = ''; document.getElementById('btnSnifferStop').style.display = 'none'; }
 }
 
 // ─── Scan Networks ────────────────────────────────────────────────────────
@@ -455,6 +471,21 @@ async function wifiStartCapture() {
 
 async function wifiStopCapture() { await api('/api/pmkid/stop', {method:'POST'}); await loadWifiStatus(); }
 
+// ─── Passive Sniffer ──────────────────────────────────────────────────────
+async function startSniffer() {
+    const iface = document.getElementById('wifiInterface').value;
+    const bssid = document.getElementById('wifiTargetBSSID').value.trim();
+    const r = await api('/api/sniffer/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({interface: iface, bssid: bssid||null})});
+    if (r && r.success) { document.getElementById('btnSnifferStart').style.display = 'none'; document.getElementById('btnSnifferStop').style.display = ''; }
+    else { openModal('Sniffer Error', `<p style="color:var(--accent-red)">${escapeHtml(r?.error||'Failed to start sniffer')}</p>`); }
+}
+
+async function stopSniffer() {
+    await api('/api/sniffer/stop', {method:'POST'});
+    document.getElementById('btnSnifferStart').style.display = '';
+    document.getElementById('btnSnifferStop').style.display = 'none';
+}
+
 async function wifiEnableMonitor() {
     const iface = document.getElementById('wifiInterface').value;
     const r = await api('/api/pmkid/monitor', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({interface: iface, enable: true})});
@@ -481,10 +512,49 @@ async function loadWifiResults() {
     } else { pmkidList.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:12px">No PMKIDs captured yet.</div>'; }
     const hsList = document.getElementById('wifiHandshakeList');
     if (r.handshakes && r.handshakes.length > 0) {
-        hsList.innerHTML = r.handshakes.map(h => `<div style="background:var(--bg-secondary);border:1px solid var(--accent-purple);border-radius:6px;padding:10px;margin-bottom:6px">
-            <div class="flex-between"><span class="badge badge-purple">Handshake</span><span style="font-size:11px;color:var(--text-muted)">${new Date(h.timestamp).toLocaleTimeString()}</span></div>
-            <div style="font-size:12px;margin-top:6px"><div><strong>SSID:</strong> ${escapeHtml(h.ssid||'?')}</div><div><strong>BSSID:</strong> ${escapeHtml(h.bssid)}</div><div><strong>Messages:</strong> ${h.messages.join(', ')}</div></div></div>`).join('');
+        hsList.innerHTML = r.handshakes.map((h, i) => `<div style="background:var(--bg-secondary);border:1px solid var(--accent-purple);border-radius:6px;padding:10px;margin-bottom:6px">
+            <div class="flex-between">
+                <div class="flex gap-8" style="align-items:center">
+                    <input type="checkbox" class="hs-select" data-index="${i}" onchange="updateHsSelectedCount()">
+                    <span class="badge badge-purple">Handshake</span>
+                </div>
+                <span style="font-size:11px;color:var(--text-muted)">${new Date(h.timestamp).toLocaleTimeString()}</span>
+            </div>
+            <div style="font-size:12px;margin-top:6px"><div><strong>SSID:</strong> ${escapeHtml(h.ssid||'?')}</div><div><strong>BSSID:</strong> ${escapeHtml(h.bssid)}</div><div><strong>Client:</strong> ${escapeHtml(h.mac_client||'?')}</div><div><strong>Messages:</strong> ${h.messages.join(', ')}</div></div></div>`).join('');
     } else { hsList.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:12px">No handshakes captured yet.</div>'; }
+}
+
+function updateHsSelectedCount() {
+    const c = document.querySelectorAll('.hs-select:checked');
+    const b = document.getElementById('btnExportHs');
+    b.textContent = c.length > 0 ? `Export Selected (${c.length})` : 'Export Selected';
+    b.disabled = c.length === 0;
+}
+
+function getHsExportHint(fmt) {
+    if (fmt === 'pcap') return '<code>aircrack-ng -w wordlist.txt &lt;file.cap&gt;</code>';
+    return '<code>hashcat -m 22000 &lt;file&gt; wordlist.txt</code>';
+}
+
+async function exportSelectedHandshakes() {
+    const checked = document.querySelectorAll('.hs-select:checked');
+    if (checked.length === 0) return;
+    const indices = Array.from(checked).map(cb => parseInt(cb.dataset.index));
+    const fmt = document.getElementById('hsExportFormat').value;
+    const r = await api('/api/handshake/export', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({indices, format: fmt})});
+    if (r && r.success) {
+        const fileList = r.files.map(f => `<code>${escapeHtml(f)}</code>`).join('<br>');
+        openModal('Handshake Export', `<p>Exported ${r.count} handshake(s):</p><div style="margin-top:8px">${fileList}</div><p style="margin-top:12px;font-size:12px;color:var(--text-secondary)">Crack with:<br>${getHsExportHint(fmt)}</p>`);
+    } else { openModal('Export', `<p style="color:var(--accent-red)">${escapeHtml(r?.error||'Export failed')}</p>`); }
+}
+
+async function exportAllHandshakes() {
+    const fmt = document.getElementById('hsExportFormat').value;
+    const r = await api('/api/handshake/export', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({format: fmt})});
+    if (r && r.success) {
+        const fileList = r.files.map(f => `<code>${escapeHtml(f)}</code>`).join('<br>');
+        openModal('Handshake Export', `<p>Exported ${r.count} handshake(s):</p><div style="margin-top:8px">${fileList}</div><p style="margin-top:12px;font-size:12px;color:var(--text-secondary)">Crack with:<br>${getHsExportHint(fmt)}</p>`);
+    } else { openModal('Export', `<p style="color:var(--accent-red)">${escapeHtml(r?.error||'No handshakes to export')}</p>`); }
 }
 
 async function wifiExport() {
@@ -506,7 +576,7 @@ async function init() {
     await loadWifiLog();
     setInterval(async () => {
         const s = await api('/api/pmkid/status');
-        if (s) { loadWifiStatusFromData(s); if (s.running || s.scanning) { await loadWifiResults(); await loadWifiLog(); } }
+        if (s) { loadWifiStatusFromData(s); if (s.running || s.scanning || s.sniffer_active) { await loadWifiResults(); await loadWifiLog(); } }
     }, 5000);
 }
 init();
