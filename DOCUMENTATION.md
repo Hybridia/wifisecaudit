@@ -20,9 +20,10 @@ Complete technical documentation for developers and collaborators. Covers instal
 12. [Hidden SSID Reveal](#12-hidden-ssid-reveal)
 13. [Handshake Export & Cracking](#13-handshake-export--cracking)
 14. [External Tool Dependencies](#14-external-tool-dependencies)
-15. [Design Decisions](#12-design-decisions)
-16. [Common Workflows](#13-common-workflows)
-17. [Troubleshooting](#14-troubleshooting)
+15. [New Modules Reference](#15-new-modules-reference)
+16. [Design Decisions](#16-design-decisions)
+17. [Common Workflows](#17-common-workflows)
+18. [Troubleshooting](#18-troubleshooting)
 
 ---
 
@@ -108,27 +109,31 @@ sudo python3 wifisecaudit.py --no-root-check
 ## 3. Architecture Overview
 
 ```
-Browser (index.html)
+Browser (index.html + cracking.js + eviltwin.js + recon.js)
   │  HTTP fetch() calls
   ▼
-Flask routes (wifisecaudit.py)
+Flask routes (wifisecaudit.py + routes/*.py Blueprints)
   │  Python method calls
   ▼
-PMKIDCapture class (modules/pmkid_capture.py)
-  │  subprocess / scapy
+Modules (modules/*.py)
+  │  subprocess / scapy / threading
   ▼
-OS tools (aireplay-ng, airmon-ng, airodump-ng, iw, scapy)
+OS tools (aircrack-ng, hostapd, dnsmasq, reaver, nmap, hcxdumptool, tshark, wash, ...)
   │
   ▼
-WiFi radio (monitor mode interface)
+WiFi radio (monitor / managed / AP mode)
 ```
 
-The tool is a standard web app:
-- **Frontend**: Single HTML page with vanilla JavaScript, no frameworks
-- **Backend**: Flask web server with JSON API endpoints
-- **Engine**: `PMKIDCapture` class that wraps system tools for WiFi operations
+The tool is a modular web app:
+- **Frontend**: Single HTML page with 4 tabs, vanilla JavaScript, no frameworks. New tab JS in separate files.
+- **Backend**: Flask web server with 4 Blueprints (cracking, mac, eviltwin, recon) + core routes in wifisecaudit.py
+- **Core Engine**: `PMKIDCapture` class (untouched) for scanning, capture, deauth, clients
+- **Extension Modules**: 14 new modules for cracking, evil twin, MITM, WPA3, WPS, nmap, IDS, etc.
+- **Integration Pattern**: All modules accept `log_fn=pmkid._log` to write to the shared log
 
 All WiFi operations happen server-side. The browser is just a control panel.
+
+**Constraint**: Single WiFi adapter — only one mode at a time (monitor / managed / AP). `ModeManager` serializes transitions. Optional dual adapter mode uses two adapters simultaneously.
 
 ---
 
@@ -136,16 +141,48 @@ All WiFi operations happen server-side. The browser is just a control panel.
 
 ```
 wifisecaudit/
-├── wifisecaudit.py         ← Flask web server, all API routes (230 lines)
+├── wifisecaudit.py              ← Flask web server, core routes, module init
 ├── modules/
-│   ├── __init__.py          ← Empty, makes it a Python package
-│   └── pmkid_capture.py     ← WiFi engine: scan, capture, deauth, clients (1970 lines)
+│   ├── __init__.py               ← Package init
+│   ├── pmkid_capture.py          ← Core WiFi engine (scan, capture, deauth, clients)
+│   ├── aircrack_runner.py        ← Aircrack-ng cracking subprocess wrapper
+│   ├── wordlist_manager.py       ← Wordlist listing/upload/management
+│   ├── mode_manager.py           ← Central adapter mode controller (managed/monitor/AP)
+│   ├── mac_spoofer.py            ← MAC address spoofing (macchanger)
+│   ├── evil_twin.py              ← Rogue AP (hostapd + dnsmasq), driver reload on cleanup
+│   ├── captive_portal.py         ← Fake login HTTP server (port 80, 3 templates)
+│   ├── arp_spoofer.py            ← Bidirectional ARP spoofing (dsniff)
+│   ├── traffic_sniffer.py        ← HTTP traffic capture (tshark)
+│   ├── nmap_scanner.py           ← Nmap wrapper with XML result parsing
+│   ├── wps_attack.py             ← WPS pixie-dust + brute-force (reaver/bully)
+│   ├── wps_scanner.py            ← WPS network detection (wash)
+│   ├── wpa3_attack.py            ← WPA3-SAE attacks + Dragonblood vulnerability scanner
+│   ├── dual_interface.py         ← Dual WiFi adapter management
+│   ├── handshake_validator.py    ← Handshake validation (aircrack-ng + tshark)
+│   ├── attack_monitor.py         ← Wireless IDS (deauth/disassoc/evil twin detection)
+│   └── report_generator.py       ← PDF audit report generation (fpdf2)
+├── routes/
+│   ├── __init__.py               ← Package init
+│   ├── cracking.py               ← Cracking & wordlist API routes (Blueprint)
+│   ├── mac.py                    ← MAC spoofing & interface reset routes (Blueprint)
+│   ├── eviltwin.py               ← Evil twin, ARP spoof, traffic, host discovery (Blueprint)
+│   └── recon.py                  ← Nmap, WPS, WPA3, dual adapter, IDS, reports (Blueprint)
 ├── templates/
-│   └── index.html           ← Single-page web dashboard (CSS + HTML + JS)
-├── data/                    ← Created at runtime, stores exported hashcat files
-├── requirements.txt         ← Python dependencies
-├── README.md                ← Quick start guide
-└── DOCUMENTATION.md         ← This file
+│   ├── index.html                ← Single-page web dashboard (4 tabs)
+│   └── captive/
+│       ├── wifi_login.html       ← Generic WiFi login captive portal
+│       ├── router_update.html    ← Fake router firmware update page
+│       └── hotel_login.html      ← Hotel/cafe WiFi login page
+├── static/
+│   ├── cracking.js               ← Cracking tab JavaScript
+│   ├── eviltwin.js               ← Evil Twin tab JavaScript
+│   └── recon.js                  ← Recon tab JavaScript
+├── data/
+│   ├── wordlists/                ← User-uploaded wordlists
+│   └── reports/                  ← Generated PDF reports
+├── requirements.txt
+├── README.md
+└── DOCUMENTATION.md              ← This file
 ```
 
 ---
@@ -175,7 +212,7 @@ Single global instance shared across all request handlers. Thread-safe because `
 
 ### Route Organization
 
-Routes are grouped by feature:
+Core routes in `wifisecaudit.py`:
 
 | Section | Routes | Purpose |
 |---------|--------|---------|
@@ -187,6 +224,16 @@ Routes are grouped by feature:
 | Passive Sniffer | `POST /api/sniffer/start`, `POST /api/sniffer/stop`, `GET /api/sniffer/status` | Background EAPOL handshake sniffer |
 | Client Scanning | `POST /api/clients/scan`, `POST /api/clients/scan/stop`, `GET /api/clients` | Discover clients on selected APs |
 | Deauthentication | `POST /api/deauth/start`, `POST /api/deauth/stop`, `GET /api/deauth/status` | Deauth APs or specific clients |
+| Debug | `POST /api/debug/scan-test` | Diagnostic: test scapy sniff on the interface |
+
+Blueprint routes (registered from `routes/`):
+
+| Blueprint | Routes | Purpose |
+|-----------|--------|---------|
+| **cracking** | `POST /api/crack/start`, `POST /api/crack/stop`, `GET /api/crack/status`, `GET /api/crack/files`, `GET /api/wordlists`, `POST /api/wordlists/upload`, `DELETE /api/wordlists/<name>`, `POST /api/wordlists/decompress-rockyou` | Aircrack-ng cracking, wordlist management |
+| **mac** | `POST /api/mac/change`, `POST /api/mac/restore`, `GET /api/mac/current`, `POST /api/interface/reset` | MAC spoofing, adapter reset |
+| **eviltwin** | `POST /api/eviltwin/start`, `POST /api/eviltwin/stop`, `GET /api/eviltwin/status`, `GET /api/eviltwin/clients`, `POST /api/arpspoof/start`, `POST /api/arpspoof/stop`, `GET /api/arpspoof/status`, `POST /api/traffic/start`, `POST /api/traffic/stop`, `GET /api/traffic/captured`, `GET /api/captive/credentials`, `POST /api/hosts/discover` | Evil twin, ARP spoof, traffic sniffer, host discovery |
+| **recon** | `POST /api/nmap/scan`, `POST /api/nmap/stop`, `GET /api/nmap/results`, `POST /api/wps/start`, `POST /api/wps/stop`, `GET /api/wps/status`, `POST /api/wps/scan`, `POST /api/wps/scan/stop`, `GET /api/wps/scan/results`, `POST /api/handshake/validate`, `POST /api/ids/start`, `POST /api/ids/stop`, `GET /api/ids/status`, `POST /api/ids/clear`, `POST /api/wpa3/dragonblood`, `POST /api/wpa3/start`, `POST /api/wpa3/stop`, `GET /api/wpa3/status`, `GET /api/dual/detect`, `POST /api/dual/auto`, `POST /api/dual/assign`, `POST /api/dual/monitor`, `POST /api/report/generate` | Nmap, WPS, WPA3, dual adapter, IDS, reports |
 
 ### Pattern
 
@@ -877,15 +924,85 @@ This allows selecting specific handshakes to crack, rather than processing all o
 
 | Tool | Package | Used For | Required? |
 |------|---------|----------|-----------|
-| `aireplay-ng` | aircrack-ng | Deauth frame injection | Yes (for deauth) |
+| `aireplay-ng` | aircrack-ng | Deauth frame injection, WPA3 downgrade | Yes |
 | `airmon-ng` | aircrack-ng | Enable/disable monitor mode | Yes (or use iw) |
-| `airodump-ng` | aircrack-ng | Client discovery | Yes (for client scan) |
-| `iw` | iw | Channel setting, fallback monitor mode | Recommended |
-| Scapy | python scapy | Packet capture, beacon parsing, disassoc, PMKID extraction | Yes |
+| `airodump-ng` | aircrack-ng | Client discovery, WPA3 transition detection | Yes |
+| `aircrack-ng` | aircrack-ng | WPA/WPA2 cracking, handshake validation | Yes |
+| `iw` | iw | Channel setting, fallback monitor mode, interface info | Recommended |
+| Scapy | python scapy | Packet capture, beacon parsing, disassoc, PMKID extraction, IDS | Yes |
+| `hostapd` | hostapd | Evil twin rogue AP | For evil twin |
+| `dnsmasq` | dnsmasq | DHCP/DNS for evil twin | For evil twin |
+| `macchanger` | macchanger | MAC address spoofing | For MAC spoof |
+| `arpspoof` | dsniff | ARP spoofing MITM | For ARP spoof |
+| `tshark` | tshark/wireshark | HTTP traffic capture, handshake validation | Recommended |
+| `reaver` | reaver | WPS pixie-dust + brute-force, wash (WPS scanning) | For WPS attacks |
+| `bully` | bully | Alternative WPS tool | Optional |
+| `wash` | reaver | WPS network detection | For WPS scanning |
+| `nmap` | nmap | Network scanning, host discovery | For nmap/recon |
+| `arp-scan` | arp-scan | Fast local host discovery | Optional (nmap fallback) |
+| `hcxdumptool` | hcxdumptool | WPA3 SAE handshake capture (v7, manages monitor mode itself) | For WPA3 attacks |
+| `hcxpcapngtool` | hcxtools | Convert pcapng to hashcat `.22000` format | For WPA3 attacks |
+| `ethtool` | ethtool | Driver detection for adapter reset | Recommended |
+| `fpdf2` | pip fpdf2 | PDF report generation | For reports |
 
 ---
 
-## 12. Design Decisions
+## 15. New Modules Reference
+
+### modules/aircrack_runner.py — Cracking
+Runs `aircrack-ng -w <wordlist> <cap_file>` in subprocess, parses stdout for `KEY FOUND!` pattern and progress. Uses `SIGKILL` for reliable stop (avoids deadlock with stdout reader thread).
+
+### modules/wordlist_manager.py — Wordlists
+Lists system wordlists (`/usr/share/wordlists/`), manages user uploads to `data/wordlists/`, decompresses `rockyou.txt.gz`.
+
+### modules/mode_manager.py — Adapter Mode Control
+Central controller for adapter mode transitions (managed/monitor/AP). Wraps pmkid's `enable_monitor_mode`/`disable_monitor_mode`. Stops all operations before switching. `reset_interface()` does full driver reload via `rmmod`/`modprobe`.
+
+### modules/mac_spoofer.py — MAC Spoofing
+Wraps `macchanger`. Saves original MAC on first call. Flow: save mode → managed → interface down → macchanger → interface up → restore previous mode.
+
+### modules/evil_twin.py — Rogue AP
+Creates AP with `hostapd` + `dnsmasq`. Start: stop NetworkManager → configure IP → write configs → start hostapd/dnsmasq → iptables NAT. Stop: kill processes → flush iptables → reload WiFi driver → restart NetworkManager. Monitors connected clients via ARP table.
+
+### modules/captive_portal.py — Fake Login Server
+Runs `http.server.HTTPServer` on port 80 (separate from Flask). Serves selected template on all GET requests. Captures POST form data (username/password). 3 templates: wifi_login, router_update, hotel_login.
+
+### modules/arp_spoofer.py — ARP Spoofing
+Runs two `arpspoof` processes for bidirectional MITM (target→gateway and gateway→target). Enables IP forwarding.
+
+### modules/traffic_sniffer.py — HTTP Traffic Capture
+Runs `tshark` with HTTP request filter, extracts URLs, cookies, form data. Only captures unencrypted HTTP.
+
+### modules/wps_attack.py — WPS Attacks
+Wraps `reaver` and `bully`. Pixie-dust mode: reaver `-K` / bully `-d` (offline, fast). Brute-force: standard PIN iteration. Parses output for WPS PIN and WPA PSK.
+
+### modules/wps_scanner.py — WPS Detection
+Runs `wash -i <interface> -s` to detect WPS-enabled networks. Parses output for BSSID, channel, WPS version, lock status.
+
+### modules/wpa3_attack.py — WPA3-SAE Attacks
+4 strategies: (1) Auto — detects transition mode, picks best approach. (2) Transition mode downgrade — 2x continuous broadcast deauth + per-client targeted deauth + Scapy disassoc loop (mirrors Monitor tab's proven deauth method), captures WPA2 handshake via airodump-ng. (3) SAE capture — hcxdumptool v7 with BPF filters, `--exitoneapol=6` for auto-exit on capture, channel format `13a`/`36b`. (4) Passive — hcxdumptool with `--disable_disassociation --associationmax=0`, no transmit. Dragonblood scanner: passive vulnerability assessment via beacon RSN IE parsing, detects transition mode and PMF status. Risk: HIGH (PMF optional or transition mode), NONE (PMF required, WPA3-only). **Important:** hcxdumptool v7 manages monitor mode itself — interface must be in managed mode before starting. Output saved to `data/` as `.pcapng`, converted to `.22000` via `hcxpcapngtool` (requires `hcxtools` package).
+
+### modules/dual_interface.py — Dual Adapter
+Manages two WiFi adapters. Auto-detects via `iw dev`, assigns primary (capture) and secondary (injection). Prefers known-good injection drivers. Both can be put in monitor mode simultaneously.
+
+### modules/handshake_validator.py — Handshake Validation
+Validates `.cap`, `.pcap`, `.pcapng` files using `aircrack-ng` (checks handshake count per network), falls back to `tshark` EAPOL frame count. Minimum 2 EAPOL frames required for cracking. `.22000` files are validated by checking for `WPA*` hash lines — they're already in crackable format.
+
+### modules/aircrack_runner.py — Capture File Support
+Lists all capture files from `data/`: `.cap`, `.pcap`, `.pcapng`, `.hc22000`, `.22000`. The `.22000` format is used by hcxdumptool captures converted via `hcxpcapngtool`.
+
+### modules/attack_monitor.py — Wireless IDS
+Uses scapy to passively monitor for: deauth floods (>10 frames in 10s from same source), disassoc floods, evil twin detection (same SSID from multiple BSSIDs). Color-coded severity alerts.
+
+### modules/nmap_scanner.py — Nmap Wrapper
+6 scan types (quick/standard/full/stealth/udp/vuln). Outputs XML, parsed into structured host/port/service/version/OS data.
+
+### modules/report_generator.py — PDF Reports
+Uses fpdf2 to generate PDF with: networks table, PMKIDs, handshakes, cracked keys, nmap results. Saved to `data/reports/`.
+
+---
+
+## 16. Design Decisions
 
 ### Why aireplay-ng instead of Scapy for deauth?
 Scapy's `sendp()` is unreliable across WiFi drivers. Different drivers need different RadioTap headers, socket types, and injection methods. `aireplay-ng` handles all of this. We proved this empirically — Scapy deauth didn't work, aireplay-ng did.
@@ -916,66 +1033,95 @@ In practice, you may capture handshakes from multiple APs but only want to crack
 
 ---
 
-## 13. Common Workflows
+## 17. Common Workflows
 
-### Full Network Audit (Handshake Capture)
+### Full Network Audit (Handshake Capture + Crack)
 
-1. Enable monitor mode
-2. Scan networks (stop when targets found)
-3. Select target AP, click "Select" to set BSSID
-4. Click **Start Sniffer** — locks to target AP's channel
-5. Click **Deauth** on the target AP — kicks clients off
-6. Clients reconnect — sniffer captures the 4-way handshake automatically
-7. Select `.cap` format, click **Export All** or check specific handshakes and **Export Selected**
-8. Crack with: `aircrack-ng -w wordlist.txt handshake.cap`
+1. Enable monitor mode → Scan networks
+2. Select target AP → Click **Start Sniffer** (locks to channel)
+3. Click **Deauth** → Clients reconnect → Sniffer captures handshake
+4. **Cracking tab** → Click **Validate All** → Confirm handshake is valid
+5. Select `.cap` file → Choose wordlist → Click **Crack**
+6. Wait for `KEY FOUND` result
 
 ### Full Network Audit (PMKID)
 
+1. Enable monitor mode → Scan networks
+2. Select target BSSID → Click **Capture**
+3. While capturing, deauth the target to force EAPOL exchange
+4. **Export Hashcat** → Crack with `hashcat -m 22000`
+
+### Evil Twin Credential Capture
+
+1. **Monitor tab**: Scan networks → Note target SSID + channel
+2. **Evil Twin tab**: Enter SSID/channel → Select WPA2 → Set passphrase → Enable Captive Portal → Choose template → **Start Evil Twin**
+3. Victims see your AP → Connect with the passphrase → Captive portal shows fake login
+4. Credentials appear in **Captured Credentials** table
+5. Click **Stop Evil Twin** when done
+
+### WPA3 Downgrade Attack (transition mode networks)
+
+1. Enable monitor mode → Scan networks → Identify WPA3 target
+2. **Recon tab** → Enter BSSID + channel → Click **Dragonblood Scan**
+3. If HIGH RISK (PMF optional / transition mode) → Select "Auto" or "Downgrade" → **Attack**
+4. Continuous deauth runs (broadcast + per-client targeted + disassoc) until handshake captured
+5. **Requires a client connected to the AP** — if all clients show "probing", there's nothing to deauth
+6. Captured `.cap` file saved to `data/` → **Cracking tab** → Validate → Crack
+
+### WPA3 SAE/Passive Capture (hcxdumptool)
+
+1. **Disable monitor mode** first — hcxdumptool manages monitor mode itself
+2. **Recon tab** → Enter BSSID + channel → Select "SAE Capture" or "Passive"
+3. For passive: manually disconnect and reconnect a device to the AP
+4. hcxdumptool captures EAPOL exchange → auto-exits on capture
+5. If `hcxpcapngtool` installed: converts to `.22000` automatically
+6. If not installed: `.pcapng` saved — install `hcxtools` and convert manually: `hcxpcapngtool -o hash.22000 capture.pcapng`
+7. Crack with `hashcat -m 22000 hash.22000 wordlist.txt`
+
+**Known limitations:**
+- aircrack-ng cannot validate hcxdumptool `.pcapng` files (different format) — use `.22000` for cracking
+- Modern devices use **randomized MACs** when probing — the probing MAC differs from the connected MAC, so client scan may show "probing" even when devices are connected
+- WPA3-only APs with **mandatory PMF** block all deauth — only passive capture works
+
+### WPS Attack (Pixie-Dust)
+
 1. Enable monitor mode
-2. Scan networks (stop when targets found)
-3. Select all target APs
-4. Start PMKID capture on target BSSID
-5. While capturing, deauth the target AP to force client reconnections (triggers PMKID)
-6. Export PMKIDs for hashcat
+2. **Recon tab** → Click **Scan for WPS** → Find WPS-enabled networks
+3. Click **Pixie** button on a target → Attack form auto-fills with pixie-dust enabled
+4. Click **Start** → Pixie-dust completes in seconds on vulnerable routers
 
-### Deauth Test (Single AP)
+### Dual Adapter Setup
 
-1. Enable monitor mode
-2. Scan networks
-3. Click "Deauth" on the target AP row
-4. Observe clients disconnecting
-5. Click "Stop Attack"
+1. Plug in second WiFi adapter
+2. **Recon tab** → Click **Auto-Detect** → Assigns primary (capture) + secondary (injection)
+3. Click **Enable Both Monitor**
+4. Use all features normally — capture never misses packets during deauth
 
-### Deauth Test (All APs, same SSID)
+### MITM Traffic Sniffing
 
-1. Enable monitor mode
-2. Scan networks (run long enough to find 5GHz APs too)
-3. Select all APs with the same SSID (both 2.4G and 5G)
-4. Click "Deauth Selected"
-5. Clients have nowhere to reconnect
+1. Start Evil Twin (or connect to target network after cracking)
+2. **Evil Twin tab** → When client connects, click **Target** button on client row
+3. ARP spoof fields auto-fill → Click **Start ARP Spoof**
+4. Click **Start Capture** on Traffic Sniffer
+5. HTTP URLs, cookies, and form data appear in tables
 
-### Targeted Client Deauth
+### Attack Detection (IDS)
 
 1. Enable monitor mode
-2. Scan networks
-3. Select target APs, click "Scan Clients"
-4. Wait for clients to appear
-5. Check specific client(s)
-6. Click "Deauth Selected Clients"
-7. Only those clients are disconnected
+2. **Recon tab** → Click **Start Monitoring** in Attack Monitor section
+3. IDS passively listens for deauth floods, disassoc attacks, evil twin APs
+4. Alerts appear in real-time with severity levels
 
 ### Hidden SSID Discovery
 
-1. Enable monitor mode
-2. Scan networks — hidden APs show as `<Hidden>`
-3. Start sniffer on the hidden AP's channel (click Select on the hidden AP, then Start Sniffer)
-4. Deauth the hidden AP
-5. Clients reconnect, sending probe requests with the real SSID
-6. `<Hidden>` updates to the actual network name in the networks table
+1. Scan networks — hidden APs show as `[Hidden]` in yellow
+2. Start sniffer on the hidden AP's channel
+3. Deauth the AP — clients reconnect with probe requests revealing the SSID
+4. `[Hidden]` updates to the real network name
 
 ---
 
-## 14. Troubleshooting
+## 18. Troubleshooting
 
 ### "No WiFi interfaces found"
 - Check your WiFi adapter is plugged in: `iwconfig`
@@ -1026,3 +1172,62 @@ In practice, you may capture handshakes from multiple APs but only want to crack
 - Try: `export POCL_DEVICES=basic && hashcat -m 22000 file.hc22000 wordlist.txt -D 1 --force`
 - Alternative: use aircrack-ng with `.cap` export instead — it works on CPU without OpenCL
 - For full hashcat support, run on bare metal or with GPU passthrough
+
+### Scanning stops working after evil twin
+- The WiFi driver can get stuck after hostapd releases the interface
+- Click **Reset Adapter** in the status bar — reloads the WiFi driver
+- If that doesn't work, manually: `sudo airmon-ng stop wlan0 && sudo systemctl restart NetworkManager`
+- Re-enable monitor mode after reset
+
+### Evil twin: "hostapd not installed"
+- Install: `sudo apt install hostapd`
+- dnsmasq is usually pre-installed on Kali
+
+### WPA3 attack: "hcxdumptool not installed"
+- Install: `sudo apt install hcxdumptool`
+- Without hcxdumptool, only the downgrade attack (transition mode) works
+
+### WPA3 hcxdumptool captures but no handshake detected
+- **Disable monitor mode first** — hcxdumptool v7 manages monitor mode itself, conflicts with airmon-ng
+- Make sure you're on the **correct channel** — hcxdumptool doesn't hop by default with BPF filter
+- The `.pcapng` may have data but `hcxpcapngtool` is needed to convert it: `sudo apt install hcxtools`
+- Check the `.pcapng` in Wireshark — look for EAPOL frames. If only beacons/probes, the client reconnection wasn't captured
+
+### WPA3 passive capture: phone reconnects but nothing captured
+- Ensure hcxdumptool is running BEFORE you disconnect/reconnect the device
+- The phone may reconnect using WPA3-SAE while hcxdumptool expects WPA2 EAPOL — this is expected for WPA3-only APs
+- Try on a WPA2/WPA3 mixed network where the device may fall back to WPA2
+
+### WPA3 downgrade: "no handshake after attempts"
+- Ensure a **client is actually connected** — "probing" clients are NOT connected and can't be deauthed
+- Modern devices use **randomized MACs** — the MAC shown as "probing" differs from the connected MAC
+- WPA3-only APs with **mandatory PMF** will reject all deauth frames — downgrade cannot work, use passive
+- Try the Monitor tab's sniffer + deauth combo instead — it uses the same proven deauth method
+
+### Validator shows "No valid handshake" for .pcapng files
+- aircrack-ng cannot parse hcxdumptool's pcapng format directly
+- If a `.22000` file exists alongside it, that's the crackable hash — validator now shows it as valid
+- Convert manually: `hcxpcapngtool -o hash.22000 capture.pcapng`
+
+### WPS scan shows no networks
+- Ensure monitor mode is enabled before scanning
+- `wash` requires monitor mode
+- Not all networks have WPS enabled
+
+### Pixie-dust fails immediately
+- Not all routers are vulnerable to pixie-dust — fall back to brute-force
+- Some routers lock WPS after failed attempts — check "Lock" column in WPS scan
+
+### Dual adapter not detected
+- Both adapters must be different physical devices (different `phy#`)
+- Check with `iw dev` — should show two separate phy entries
+- Some USB adapters need drivers: `sudo apt install realtek-rtl88xxau-dkms`
+
+### PDF report generation fails
+- Install: `pip3 install fpdf2`
+- Check `data/reports/` directory is writable
+
+### IDS shows no alerts but attacks are happening
+- IDS requires monitor mode — enable it first
+- The adapter must be on the same channel as the attack
+- Threshold is 10 deauth frames in 10 seconds from same source
