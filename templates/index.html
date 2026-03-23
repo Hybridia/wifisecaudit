@@ -67,6 +67,13 @@
         .modal-title { font-size: 16px; font-weight: 700; margin-bottom: 16px; color: var(--accent-cyan); }
         .modal-close { float: right; background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 18px; }
         .modal-close:hover { color: var(--accent-red); }
+        /* Tab navigation */
+        .tab-bar { display: flex; gap: 0; background: var(--bg-secondary); border-bottom: 1px solid var(--border); padding: 0 24px; position: sticky; top: 49px; z-index: 99; }
+        .tab-btn { padding: 10px 20px; font-size: 12px; font-weight: 600; color: var(--text-muted); cursor: pointer; border: none; background: none; border-bottom: 2px solid transparent; font-family: inherit; transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.5px; }
+        .tab-btn:hover { color: var(--text-secondary); background: var(--bg-card); }
+        .tab-btn.active { color: var(--accent-cyan); border-bottom-color: var(--accent-cyan); }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
         .mb-16 { margin-bottom: 16px; }
         .mb-8 { margin-bottom: 8px; }
         .mt-8 { margin-top: 8px; }
@@ -89,8 +96,15 @@
     </div>
 </div>
 
+<div class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('monitor')">Monitor & Capture</button>
+    <button class="tab-btn" onclick="switchTab('cracking')">Cracking</button>
+    <button class="tab-btn" onclick="switchTab('eviltwin')">Evil Twin</button>
+    <button class="tab-btn" onclick="switchTab('recon')">Recon</button>
+</div>
+
 <div class="main">
-    <!-- Status bar -->
+    <!-- Status bar (visible on all tabs) -->
     <div class="card mb-16">
         <div class="flex-between" style="flex-wrap:wrap">
             <div class="flex gap-16" style="align-items:center;flex-wrap:wrap">
@@ -105,16 +119,23 @@
                 <span class="badge" id="wifiMonitorBadge" style="display:none">Monitor Mode</span>
                 <button class="btn btn-sm" onclick="wifiEnableMonitor()" id="btnMonitorOn">Enable Monitor</button>
                 <button class="btn btn-sm" onclick="wifiDisableMonitor()" id="btnMonitorOff" style="display:none">Disable Monitor</button>
+                <button class="btn btn-sm" onclick="resetAdapter()" title="Full adapter reset — reloads WiFi driver. Use if scanning stops working after evil twin.">Reset Adapter</button>
             </div>
         </div>
     </div>
+
+    <!-- ═══ Tab: Monitor & Capture ═══ -->
+    <div id="tab-monitor" class="tab-content active">
 
     <div class="grid grid-2 mb-16">
         <!-- Networks -->
         <div class="card">
             <div class="card-header">
                 <span class="card-title">Networks</span>
-                <div class="flex gap-8">
+                <div class="flex gap-8" style="align-items:center">
+                    <span style="font-size:10px;color:var(--text-muted)">Min signal:</span>
+                    <input type="range" id="signalFilter" min="-100" max="-20" value="-100" style="width:80px" oninput="applySignalFilter()">
+                    <span id="signalFilterValue" style="font-size:10px;color:var(--accent-cyan);min-width:45px">All</span>
                     <button class="btn btn-primary btn-sm" onclick="wifiScan()" id="btnWifiScan">Scan</button>
                     <button class="btn btn-danger btn-sm" onclick="wifiStopScan()" id="btnWifiScanStop" style="display:none">Stop</button>
                 </div>
@@ -231,6 +252,418 @@
             <div class="event-log" id="wifiLog" style="max-height:250px"></div>
         </div>
     </div>
+
+    </div><!-- /tab-monitor -->
+
+    <!-- ═══ Tab: Cracking ═══ -->
+    <div id="tab-cracking" class="tab-content">
+
+    <!-- Handshake Validator -->
+    <div class="card mb-16">
+        <div class="card-header">
+            <span class="card-title">Handshake Validator</span>
+            <button class="btn btn-primary btn-sm" onclick="validateHandshakes()" id="validateBtn">Validate All</button>
+        </div>
+        <div id="validateResults" style="max-height:150px;overflow-y:auto">
+            <div style="padding:6px 8px;color:var(--text-muted);font-size:12px">Click "Validate All" to verify .cap files contain valid handshakes before cracking.</div>
+        </div>
+    </div>
+
+    <div class="grid grid-2 mb-16">
+        <!-- Cap Files -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Capture Files</span>
+                <button class="btn btn-sm" onclick="loadCapFiles()">Refresh</button>
+            </div>
+            <div class="table-wrap" style="max-height:300px">
+                <table id="capFilesTable">
+                    <thead><tr><th>File</th><th>Size</th><th>Modified</th><th>Actions</th></tr></thead>
+                    <tbody><tr><td colspan="4" style="text-align:center;color:var(--text-muted)">Loading...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Wordlists -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Wordlists</span>
+            </div>
+            <div class="flex gap-8 mb-8" style="align-items:center;flex-wrap:wrap">
+                <select id="crackWordlist" style="min-width:200px"></select>
+                <input type="file" id="wordlistUpload" accept=".txt,.lst,.wordlist,.dict,.gz" style="font-size:11px;max-width:200px">
+                <button class="btn btn-sm btn-primary" onclick="uploadWordlist()">Upload</button>
+            </div>
+            <div id="wordlistList" style="max-height:200px;overflow-y:auto"></div>
+        </div>
+    </div>
+
+    <!-- Cracking Progress -->
+    <div class="card mb-16" id="crackProgress" style="display:none;border-color:var(--accent-green)">
+        <div class="card-header">
+            <span class="card-title" style="color:var(--accent-green)">Cracking in Progress</span>
+            <button class="btn btn-danger btn-sm" onclick="stopCrack()" id="crackStopBtn">Stop</button>
+        </div>
+        <div style="padding:8px 0">
+            <div id="crackProgressText" style="font-size:13px;color:var(--text-secondary)">Starting...</div>
+            <div id="crackResult" style="margin-top:8px"></div>
+        </div>
+    </div>
+
+    <!-- MAC Spoofer -->
+    <div class="card mb-16">
+        <div class="card-header">
+            <span class="card-title">MAC Address Spoofer</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:12px">
+            Change your WiFi adapter's MAC address to stay anonymous or impersonate another device.
+            The adapter will briefly go down and back up during the change.
+        </div>
+        <div class="flex gap-16 mb-8" style="align-items:flex-start;flex-wrap:wrap">
+            <div>
+                <div class="mb-8">
+                    <span style="font-size:12px;color:var(--text-secondary)">Current MAC:</span>
+                    <span id="currentMac" style="font-size:14px;color:var(--accent-cyan);margin-left:6px;font-weight:600">loading...</span>
+                </div>
+                <div class="flex gap-8 mb-8">
+                    <button class="btn btn-primary btn-sm" onclick="randomizeMac()">Randomize MAC</button>
+                    <button class="btn btn-sm" onclick="restoreMac()">Restore Original</button>
+                </div>
+            </div>
+            <div style="border-left:1px solid var(--border);padding-left:16px">
+                <div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px">Set a specific MAC address:</div>
+                <div class="flex gap-8 mb-8" style="align-items:center">
+                    <input type="text" id="customMacInput" placeholder="AA:BB:CC:DD:EE:FF" style="width:170px">
+                    <button class="btn btn-sm" onclick="setCustomMac()">Apply</button>
+                </div>
+                <div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px">Clone MAC from a discovered client:</div>
+                <div class="flex gap-8" style="align-items:center">
+                    <input type="text" id="cloneMacInput" placeholder="Paste client MAC here" style="width:170px">
+                    <button class="btn btn-sm" onclick="cloneMac()">Clone</button>
+                </div>
+            </div>
+        </div>
+        <div id="macResult" style="font-size:12px"></div>
+    </div>
+
+    </div><!-- /tab-cracking -->
+
+    <!-- ═══ Tab: Evil Twin ═══ -->
+    <div id="tab-eviltwin" class="tab-content">
+
+    <div class="grid grid-2 mb-16">
+        <!-- Evil Twin AP -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Evil Twin AP</span>
+                <div class="flex gap-8" style="align-items:center">
+                    <span style="font-size:11px;color:var(--text-muted)">Mode:</span>
+                    <span id="etModeIndicator" style="font-size:11px">-</span>
+                </div>
+            </div>
+            <div class="flex gap-8 mb-8" style="align-items:center;flex-wrap:wrap">
+                <input type="text" id="etSsid" placeholder="Target SSID" style="width:160px">
+                <input type="text" id="etChannel" placeholder="Channel" value="6" style="width:70px">
+                <select id="etEncryption" style="font-size:11px" onchange="document.getElementById('etPassRow').style.display=this.value==='wpa2'?'flex':'none'">
+                    <option value="open">Open (no password)</option>
+                    <option value="wpa2">WPA2</option>
+                </select>
+            </div>
+            <div class="flex gap-8 mb-8" style="align-items:center;display:none" id="etPassRow">
+                <input type="text" id="etPassphrase" placeholder="WPA2 passphrase (min 8 chars)" value="testing123" style="width:240px">
+                <span style="font-size:10px;color:var(--text-muted)">Victims must enter this to connect</span>
+            </div>
+            <div class="flex gap-8 mb-8" style="align-items:center">
+                <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer">
+                    <input type="checkbox" id="etCaptive"> Enable Captive Portal
+                </label>
+                <select id="etTemplate" style="font-size:11px">
+                    <option value="wifi_login">WiFi Login</option>
+                    <option value="router_update">Router Update</option>
+                    <option value="hotel_login">Hotel/Cafe Login</option>
+                </select>
+            </div>
+            <div class="flex gap-8 mb-8">
+                <button class="btn btn-primary btn-sm" onclick="startEvilTwin()" id="etStartBtn">Start Evil Twin</button>
+                <button class="btn btn-danger btn-sm" onclick="stopEvilTwin()" id="etStopBtn" style="display:none">Stop Evil Twin</button>
+                <span id="etStatus" style="font-size:12px;align-self:center"><span style="color:var(--text-muted)">Inactive</span></span>
+            </div>
+            <div style="font-size:11px;color:var(--accent-yellow)">Warning: Starting evil twin will disable monitor mode and all capture operations.</div>
+        </div>
+
+        <!-- Connected Clients -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Connected Clients</span>
+            </div>
+            <div class="table-wrap" style="max-height:250px">
+                <table id="etClientsTable">
+                    <thead><tr><th>IP Address</th><th>MAC Address</th><th>Actions</th></tr></thead>
+                    <tbody><tr><td colspan="3" style="text-align:center;color:var(--text-muted)">No clients connected</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Captured Credentials -->
+    <div class="card mb-16" style="border-color:var(--accent-green)">
+        <div class="card-header">
+            <span class="card-title" style="color:var(--accent-green)">Captured Credentials</span>
+        </div>
+        <div class="table-wrap" style="max-height:250px">
+            <table id="credsTable">
+                <thead><tr><th>Time</th><th>IP</th><th>Username</th><th>Password</th></tr></thead>
+                <tbody><tr><td colspan="4" style="text-align:center;color:var(--text-muted)">No credentials captured</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Network Hosts Discovery -->
+    <div class="card mb-16">
+        <div class="card-header">
+            <span class="card-title">Network Hosts</span>
+            <div class="flex gap-8">
+                <button class="btn btn-primary btn-sm" onclick="discoverHosts()" id="hostScanBtn">Discover Hosts</button>
+            </div>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+            Scans the local network for live hosts and their IPs. Works when connected to a network (evil twin gateway, or after joining a cracked network). Click a host to use it as ARP spoof target.
+        </div>
+        <div id="hostGatewayInfo" style="font-size:12px;margin-bottom:8px;display:none"></div>
+        <div class="table-wrap" style="max-height:200px">
+            <table id="hostsTable">
+                <thead><tr><th>IP Address</th><th>MAC Address</th><th>Vendor</th><th>Actions</th></tr></thead>
+                <tbody><tr><td colspan="4" style="text-align:center;color:var(--text-muted)">Click "Discover Hosts" to scan</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="grid grid-2 mb-16">
+        <!-- ARP Spoof -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">ARP Spoofing (MITM)</span>
+                <span id="arpStatus" style="font-size:11px"><span style="color:var(--text-muted)">Inactive</span></span>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+                Intercept traffic between a target device and the gateway. Select a target from Network Hosts or Connected Clients above.
+            </div>
+            <div class="flex gap-8 mb-8" style="align-items:center;flex-wrap:wrap">
+                <input type="text" id="arpTarget" placeholder="Target IP" style="width:180px">
+                <input type="text" id="arpGateway" placeholder="Gateway IP" style="width:180px">
+            </div>
+            <div class="flex gap-8">
+                <button class="btn btn-primary btn-sm" onclick="startArpSpoof()" id="arpStartBtn">Start ARP Spoof</button>
+                <button class="btn btn-danger btn-sm" onclick="stopArpSpoof()" id="arpStopBtn" style="display:none">Stop</button>
+            </div>
+        </div>
+
+        <!-- Traffic Sniffer -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Traffic Sniffer</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+                Captures HTTP traffic (URLs, cookies, form data) using tshark. Works best with ARP spoofing active or when running as the evil twin gateway. Only captures unencrypted HTTP — HTTPS sites will not show content.
+            </div>
+            <div class="flex gap-8 mb-8">
+                <button class="btn btn-primary btn-sm" onclick="startTraffic()" id="trafficStartBtn">Start Capture</button>
+                <button class="btn btn-danger btn-sm" onclick="stopTraffic()" id="trafficStopBtn" style="display:none">Stop</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Traffic Tables -->
+    <div class="grid grid-2 mb-16">
+        <div class="card">
+            <div class="card-header"><span class="card-title">Captured URLs</span></div>
+            <div class="table-wrap" style="max-height:200px">
+                <table id="trafficUrlTable">
+                    <thead><tr><th>Source</th><th>Method</th><th>URL</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header"><span class="card-title">Captured Cookies</span></div>
+            <div class="table-wrap" style="max-height:200px">
+                <table id="trafficCookieTable">
+                    <thead><tr><th>Host</th><th>Cookie</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    </div><!-- /tab-eviltwin -->
+
+    <!-- ═══ Tab: Recon ═══ -->
+    <div id="tab-recon" class="tab-content">
+
+    <!-- Dual Interface -->
+    <div class="card mb-16">
+        <div class="card-header">
+            <span class="card-title">Dual Adapter Mode</span>
+            <div class="flex gap-8">
+                <button class="btn btn-primary btn-sm" onclick="dualAutoDetect()">Auto-Detect</button>
+                <button class="btn btn-sm" onclick="dualEnableMonitor()" id="dualMonBtn">Enable Both Monitor</button>
+                <button class="btn btn-sm" onclick="dualDisableMonitor()" id="dualMonOffBtn" style="display:none">Disable Both</button>
+            </div>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+            Use two WiFi adapters: one for capture (never leaves the channel), one for injection (deauth). Dramatically improves handshake capture reliability.
+        </div>
+        <div id="dualStatus" style="font-size:12px;margin-bottom:8px"></div>
+        <div class="flex gap-8" style="align-items:center;flex-wrap:wrap">
+            <select id="dualPrimary" style="font-size:11px;min-width:120px"><option value="">Primary (capture)</option></select>
+            <select id="dualSecondary" style="font-size:11px;min-width:120px"><option value="">Secondary (inject)</option></select>
+            <button class="btn btn-sm" onclick="dualManualAssign()">Assign</button>
+        </div>
+    </div>
+
+    <!-- WPA3-SAE Attack -->
+    <div class="card mb-16" style="border-color:var(--accent-purple)">
+        <div class="card-header">
+            <span class="card-title" style="color:var(--accent-purple)">WPA3-SAE Attack</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+            Attack WPA3 networks: transition mode downgrade (WPA3→WPA2), SAE handshake capture, and Dragonblood vulnerability scanning.
+            Requires monitor mode. <code>hcxdumptool</code> needed for SAE capture.
+        </div>
+        <div class="flex gap-8 mb-8" style="align-items:center;flex-wrap:wrap">
+            <input type="text" id="wpa3Bssid" placeholder="Target BSSID" style="width:160px">
+            <input type="text" id="wpa3Channel" placeholder="CH" style="width:50px">
+            <select id="wpa3Method" style="font-size:11px">
+                <option value="auto">Auto (best strategy)</option>
+                <option value="downgrade">Downgrade (WPA3→WPA2)</option>
+                <option value="sae_capture">SAE Capture (hcxdumptool)</option>
+                <option value="passive">Passive (no deauth)</option>
+            </select>
+            <button class="btn btn-primary btn-sm" onclick="startWpa3Attack()" id="wpa3StartBtn">Attack</button>
+            <button class="btn btn-danger btn-sm" onclick="stopWpa3Attack()" id="wpa3StopBtn" style="display:none">Stop</button>
+            <button class="btn btn-sm" onclick="scanDragonblood()" style="border-color:var(--accent-purple);color:var(--accent-purple)">Dragonblood Scan</button>
+        </div>
+        <div id="wpa3Progress" style="font-size:11px;color:var(--text-secondary)"></div>
+        <div id="wpa3Result" style="font-size:13px;margin-top:4px"></div>
+        <div id="dragonbloodReport" style="margin-top:8px;display:none"></div>
+    </div>
+
+    <!-- WPS Scanner (wash) -->
+    <div class="card mb-16">
+        <div class="card-header">
+            <span class="card-title">WPS Network Scanner</span>
+            <div class="flex gap-8">
+                <button class="btn btn-primary btn-sm" onclick="startWpsScan()" id="wpsScanBtn">Scan for WPS</button>
+                <button class="btn btn-danger btn-sm" onclick="stopWpsScan()" id="wpsScanStopBtn" style="display:none">Stop</button>
+            </div>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+            Uses <code>wash</code> to detect WPS-enabled networks. Requires monitor mode. Click Pixie for fast offline attack or Brute for PIN brute-force.
+        </div>
+        <div class="table-wrap" style="max-height:250px">
+            <table id="wpsNetworksTable">
+                <thead><tr><th>SSID</th><th>BSSID</th><th>CH</th><th>Signal</th><th>WPS</th><th>Lock</th><th>Actions</th></tr></thead>
+                <tbody><tr><td colspan="7" style="text-align:center;color:var(--text-muted)">Click "Scan for WPS" to discover WPS networks</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="grid grid-2 mb-16">
+        <!-- WPS Attack -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">WPS Attack</span>
+            </div>
+            <div class="flex gap-8 mb-8" style="align-items:center;flex-wrap:wrap">
+                <input type="text" id="wpsBssid" placeholder="Target BSSID" style="width:160px">
+                <input type="text" id="wpsChannel" placeholder="CH" style="width:50px">
+                <select id="wpsTool" style="font-size:11px">
+                    <option value="reaver">Reaver</option>
+                    <option value="bully">Bully</option>
+                </select>
+                <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer">
+                    <input type="checkbox" id="wpsPixieDust" checked> Pixie-Dust
+                </label>
+                <button class="btn btn-primary btn-sm" onclick="startWpsAttack()" id="wpsStartBtn">Start</button>
+                <button class="btn btn-danger btn-sm" onclick="stopWpsAttack()" id="wpsStopBtn" style="display:none">Stop</button>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">Pixie-Dust: offline attack, succeeds in seconds on vulnerable routers. Uncheck for online PIN brute-force.</div>
+            <div id="wpsProgress" style="font-size:11px;color:var(--text-secondary)"></div>
+            <div id="wpsResult" style="font-size:13px;margin-top:4px"></div>
+        </div>
+
+    </div>
+
+    <!-- Attack Monitor / IDS -->
+    <div class="card mb-16" style="border-color:var(--accent-orange)">
+        <div class="card-header">
+            <span class="card-title" style="color:var(--accent-orange)">Attack Monitor (IDS)</span>
+            <div class="flex gap-8" style="align-items:center">
+                <span id="idsStatus" style="font-size:11px"><span style="color:var(--text-muted)">Off</span></span>
+                <button class="btn btn-primary btn-sm" onclick="startIDS()" id="idsStartBtn">Start Monitoring</button>
+                <button class="btn btn-danger btn-sm" onclick="stopIDS()" id="idsStopBtn" style="display:none">Stop</button>
+                <button class="btn btn-sm" onclick="clearIDSAlerts()">Clear</button>
+            </div>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+            Detects attacks on your network: deauth floods, disassociation attacks, and evil twin (rogue AP) detection. Requires monitor mode.
+        </div>
+        <div id="idsStats" style="font-size:12px;margin-bottom:8px"></div>
+        <div class="event-log" id="idsAlerts" style="max-height:250px">
+            <div style="padding:8px;color:var(--text-muted)">Click "Start Monitoring" to begin</div>
+        </div>
+    </div>
+
+    <div class="grid grid-2 mb-16">
+        <!-- Nmap Scanner -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Nmap Scanner</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+                Scan hosts for open ports, services, and OS detection. Requires managed mode with network connectivity.
+            </div>
+            <div class="flex gap-8 mb-8" style="align-items:center;flex-wrap:wrap">
+                <input type="text" id="nmapTarget" placeholder="Target IP / range / CIDR" style="width:200px">
+                <select id="nmapScanType" style="font-size:11px">
+                    <option value="quick">Quick (-T4 -F)</option>
+                    <option value="standard">Standard (-T4 -sV)</option>
+                    <option value="full">Full (-T4 -A -p-)</option>
+                    <option value="stealth">Stealth (-sS -T2)</option>
+                    <option value="udp">UDP (top 100)</option>
+                    <option value="vuln">Vuln scripts</option>
+                </select>
+                <button class="btn btn-primary btn-sm" onclick="startNmapScan()" id="nmapStartBtn">Scan</button>
+                <button class="btn btn-danger btn-sm" onclick="stopNmapScan()" id="nmapStopBtn" style="display:none">Stop</button>
+            </div>
+        </div>
+
+        <!-- Report -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Audit Report</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+                Export all findings (networks, PMKIDs, handshakes, nmap results) as a PDF report.
+            </div>
+            <div class="flex gap-8" style="align-items:center">
+                <button class="btn btn-primary btn-sm" onclick="generateReport()" id="reportBtn">Generate PDF Report</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Nmap Results -->
+    <div class="card mb-16">
+        <div class="card-header">
+            <span class="card-title">Nmap Results</span>
+        </div>
+        <div id="nmapResults" style="max-height:500px;overflow-y:auto">
+            <div style="padding:12px;color:var(--text-muted);font-size:12px">No scan results yet.</div>
+        </div>
+    </div>
+
+    </div><!-- /tab-recon -->
+
 </div>
 
 <!-- Modal -->
@@ -242,7 +675,22 @@
     </div>
 </div>
 
+<script src="/static/cracking.js"></script>
+<script src="/static/eviltwin.js"></script>
+<script src="/static/recon.js"></script>
 <script>
+// ─── Tab Navigation ──────────────────────────────────────────────────────
+function switchTab(tabName) {
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+    document.getElementById('tab-' + tabName).classList.add('active');
+    event.target.classList.add('active');
+    // Initialize tab content on first switch
+    if (tabName === 'cracking') initCrackingTab();
+    else if (tabName === 'eviltwin') initEvilTwinTab();
+    else if (tabName === 'recon') initReconTab();
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────
 async function api(url, opts = {}) {
     try {
@@ -324,15 +772,21 @@ function wifiScanFinished() {
 async function wifiStopScan() { await api('/api/pmkid/scan/stop', {method:'POST'}); wifiScanFinished(); await loadWifiNetworks(); }
 
 async function loadWifiNetworks() {
-    const networks = await api('/api/pmkid/networks');
+    let networks = await api('/api/pmkid/networks');
     const tbody = document.querySelector('#wifiNetworksTable tbody');
     if (!networks || networks.length === 0) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">No networks found</td></tr>'; return; }
+    // Apply signal strength filter
+    const minSig = window._minSignalFilter || -100;
+    if (minSig > -100) {
+        networks = networks.filter(n => n.signal && n.signal >= minSig);
+        if (networks.length === 0) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">All networks filtered (signal too weak)</td></tr>'; return; }
+    }
     tbody.innerHTML = networks.map(n => {
         const sig = n.signal ? `${n.signal} dBm` : '-';
         const enc = n.encryption.includes('WPA') ? `<span class="badge badge-green">${escapeHtml(n.encryption)}</span>` : n.encryption === 'Open' ? '<span class="badge badge-red">Open</span>' : `<span class="badge badge-yellow">${escapeHtml(n.encryption)}</span>`;
         return `<tr>
             <td><input type="checkbox" class="deauth-select" data-bssid="${escapeHtml(n.bssid)}" data-channel="${n.channel||0}" onchange="updateDeauthSelectedCount()"></td>
-            <td>${escapeHtml(n.ssid)}</td>
+            <td>${n.ssid && n.ssid.trim() && !n.ssid.includes('\\x00') ? escapeHtml(n.ssid) : '<span style="color:var(--accent-yellow);font-style:italic" title="Hidden SSID — send probe to reveal">[Hidden]</span>'}</td>
             <td style="font-size:11px;color:var(--text-muted)">${escapeHtml(n.bssid)}</td>
             <td>${n.channel||'-'}</td><td>${sig}</td><td>${enc}</td>
             <td>
@@ -499,6 +953,19 @@ async function wifiDisableMonitor() {
     await loadWifiStatus();
 }
 
+async function resetAdapter() {
+    if (!confirm('Reset WiFi adapter? This will:\n- Stop all operations\n- Reload the WiFi driver\n- Restart NetworkManager\n\nUse this if scanning stopped working after evil twin.')) return;
+    openModal('Resetting...', '<p>Reloading WiFi driver, please wait...</p>');
+    const r = await api('/api/interface/reset', {method:'POST'});
+    if (r && r.success) {
+        openModal('Reset Complete', `<p style="color:var(--accent-green)">${escapeHtml(r.message)}</p><p style="margin-top:8px;font-size:12px;color:var(--text-secondary)">You can now re-enable monitor mode and scan.</p>`);
+    } else {
+        openModal('Reset', `<p style="color:var(--accent-red)">${escapeHtml(r?.message||'Reset failed')}</p>`);
+    }
+    await loadWifiInterfaces();
+    await loadWifiStatus();
+}
+
 async function loadWifiResults() {
     const r = await api('/api/pmkid/results');
     if (!r) return;
@@ -576,7 +1043,11 @@ async function init() {
     await loadWifiLog();
     setInterval(async () => {
         const s = await api('/api/pmkid/status');
-        if (s) { loadWifiStatusFromData(s); if (s.running || s.scanning || s.sniffer_active) { await loadWifiResults(); await loadWifiLog(); } }
+        if (s) {
+            loadWifiStatusFromData(s);
+            await loadWifiResults();
+            await loadWifiLog();
+        }
     }, 5000);
 }
 init();
