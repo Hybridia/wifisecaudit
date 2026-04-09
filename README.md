@@ -14,6 +14,8 @@ Standalone web-based WiFi penetration testing toolkit for authorized security as
 - **Passive Sniffer** — Background EAPOL sniffer that captures handshakes when clients reconnect after deauth
 - **Handshake Capture & Export** — Capture 4-way WPA2 handshakes, export as `.cap` (aircrack-ng) or `.hc22000` (hashcat)
 - **Adapter Reset** — Full driver reload (`rmmod`/`modprobe`) to recover from broken adapter state after evil twin
+<img width="2546" height="1257" alt="image" src="https://github.com/user-attachments/assets/23795e3c-6d34-4790-ab96-417caeb55b4b" />
+
 
 ### Cracking
 - **Handshake Validation** — Verify capture files contain valid handshakes before cracking. Supports `.cap`, `.pcap`, `.pcapng`, and `.22000` files. Uses aircrack-ng + tshark
@@ -21,6 +23,7 @@ Standalone web-based WiFi penetration testing toolkit for authorized security as
 - **Capture File Browser** — Lists all `.cap`, `.pcap`, `.pcapng`, `.hc22000`, `.22000` files from the data directory
 - **Wordlist Management** — Auto-detects system wordlists (rockyou.txt, etc.), upload custom wordlists, decompress rockyou.txt.gz
 - **MAC Address Spoofing** — Randomize, set custom, clone from discovered client, restore original
+<img width="2547" height="1079" alt="image" src="https://github.com/user-attachments/assets/d21142e3-74e9-479a-b6a6-41bc6dfe644a" />
 
 ### Evil Twin & MITM
 - **Evil Twin AP** — Create rogue access point (hostapd + dnsmasq) with configurable SSID, channel, encryption
@@ -31,6 +34,7 @@ Standalone web-based WiFi penetration testing toolkit for authorized security as
 - **Network Host Discovery** — Scan local network for live hosts (arp-scan/nmap/ARP table), auto-fills ARP spoof targets
 - **Credential Capture** — Live table of captured credentials from captive portal
 - **Target Buttons** — Connected clients and discovered hosts have "Target" buttons that auto-fill ARP spoof fields
+<img width="2508" height="563" alt="image" src="https://github.com/user-attachments/assets/d56d306a-2dbb-40c8-9f7d-3423dc8db4b1" />
 
 ### Recon
 - **Dual Adapter Mode** — Use two WiFi adapters: one for capture (stays on channel), one for injection (deauth). Auto-detect or manual assignment
@@ -46,6 +50,9 @@ Standalone web-based WiFi penetration testing toolkit for authorized security as
 - **Nmap Scanner** — 6 scan types: quick, standard, full, stealth, UDP, vuln scripts
 - **Attack Monitor (IDS)** — Detect deauth floods (threshold: 10 frames/10s), disassociation attacks, and evil twin (same SSID from multiple BSSIDs)
 - **PDF Report Generation** — Export all findings as a PDF audit report
+<img width="2536" height="1137" alt="image" src="https://github.com/user-attachments/assets/087e96f0-3f75-45cd-a936-fe568d7c6934" />
+<img width="2513" height="190" alt="image" src="https://github.com/user-attachments/assets/faaa562c-8f47-471b-9ff0-c495dbd83258" />
+
 
 ## Requirements
 
